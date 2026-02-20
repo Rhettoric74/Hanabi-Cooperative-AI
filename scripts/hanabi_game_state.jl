@@ -81,6 +81,13 @@ end
     return player_hands, remaining_deck
 end
 
+
+struct CardHint
+    giver::Int
+    reciever::Int
+    attribute::Union{Symbol, Int}
+    indices::Vector{Int}
+end
 # ============================================================================
 # PUBLIC GAME STATE
 # ============================================================================
@@ -92,6 +99,7 @@ mutable struct PublicGameState
     explosion_tokens::Int
     discard_pile::Vector{Card}
     deck_size::Int
+    hint_history::Vector{CardHint}
     
     # Inner constructor with positional arguments
     function PublicGameState(
@@ -99,21 +107,22 @@ mutable struct PublicGameState
         info_tokens::Int,
         explosion_tokens::Int,
         discard_pile::Vector{Card},
-        deck_size::Int
+        deck_size::Int,
+        hint_history::Vector{CardHint}
     )
-        new(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size)
+        new(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history)
     end
 end
-
 # Outer constructor with defaults (positional, not keyword)
 function PublicGameState(
     played_stacks=Dict(:red=>0, :white=>0, :green=>0, :blue=>0, :yellow=>0),
     info_tokens=8,
     explosion_tokens=0,
     discard_pile=Card[],
-    deck_size=60
+    deck_size=60,
+    hint_history=CardHint[]
 )
-    return PublicGameState(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size)
+    return PublicGameState(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history)
 end
 
 const MAX_SCORE = 25  # 5 colors × 5 numbers
@@ -215,6 +224,7 @@ function current_score(state::PublicGameState)
     return sum(values(state.played_stacks))
 end
 
+
 # ============================================================================
 # FULL GAME STATE (with hidden info)
 # ============================================================================
@@ -254,6 +264,7 @@ function init_game(num_players::Int=3, cards_per_player::Int=5)
     return FullGameState(public, player_hands, remaining_deck, 1, 
                         ["Game started with $num_players players"])
 end
+
 # ============================================================================
 # PLAYER KNOWLEDGE STATE
 # ============================================================================
@@ -265,7 +276,6 @@ struct CardBelief
     known_color::Union{Symbol,Nothing}
     known_number::Union{Int,Nothing}
 end
-
 # Player's knowledge state (what they know about the game)
 struct PlayerKnowledge
     own_hand::Vector{CardBelief}
@@ -386,17 +396,16 @@ end
 struct GiveHint <: Action
     giver::Int
     receiver::Int
-    hint_type::Union{Symbol, Int}  # :color or number
     hint_value::Union{Symbol, Int}
 end
 # TODO: make this more sophisticated, usually it's a player's choice which stack a rainbow card get's played on
 # Player's don't need to specify which stack until after they play the card.
-function rainbow_choice(options, game)
+function random_rainbow_choice(options, game)
     return rand(options)
 end
 
 # Execute a play action
-function execute_action!(game::FullGameState, action::PlayCard)
+function execute_action!(game::FullGameState, action::PlayCard, choose_rainbow_stack=random_rainbow_choice)
     player = action.player
     card = game.player_hands[player][action.card_index]
     
@@ -404,7 +413,7 @@ function execute_action!(game::FullGameState, action::PlayCard)
     
     if can_play_card(game.public, card)
         if card.color == :rainbow
-            stack = rainbow_choice(valid_rainbow_placements(game, card.color), game)
+            stack = choose_rainbow_stack(valid_rainbow_placements(game, card.number), game)
             play_rainbow_card!(game, card, stack)
         else
             play_card!(game.public, card)
@@ -462,3 +471,26 @@ function execute_action!(game::FullGameState, action::DiscardCard)
     return game
 end
 
+function get_matching_cards(hand::Vector{Card}, attribute::Union{Symbol, Int})
+    matching_indices = Int[]
+    for (i, card) in enumerate(hand)
+        if card.color == attribute || card.number == attribute
+            push!(matching_indices, i)
+        end
+    end
+    return matching_indices
+end
+function execute_action!(game::FullGameState, action::GiveHint)
+    use_info_token!(game.public)
+    giver, reciever, value = action.giver, action.receiver, action.hint_value
+    if giver == reciever
+        error("Player cannot give information to themself!")
+    end
+    card_indices = get_matching_cards(game.player_hands[reciever], value)
+    if isempty(card_indices)
+        error("Players cannot give info about attributes that aren't present in the reciever's hand.")
+    end
+    push!(game.history, "Player $giver tells player $reciever that they have $value in indices $card_indices.")
+    push!(game.public.hint_history, CardHint(giver, reciever, value, card_indices))
+    game.current_player = mod1(game.current_player + 1, length(game.player_hands))
+end

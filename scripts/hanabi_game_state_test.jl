@@ -28,7 +28,7 @@ function verify_game_logic()
     
     # Test 2: Initialize a game
     println("\n2. Initializing a 3-player game...")
-    game = init_game(3, 4)
+    game = init_game(4, 4)
     println("   Players: $(length(game.player_hands))")
     println("   Cards per player: $(length(game.player_hands[1]))")
     println("   Deck size: $(length(game.deck))")
@@ -127,6 +127,9 @@ function verify_game_logic()
         println("   Reason: $reason")
     end
     println("   Current score: $(current_score(game.public))/$MAX_SCORE")
+    println("\n7. Test Give Hint")
+    println("$(game.current_player)")
+    execute_action!(game, GiveHint(game.current_player, mod1(game.current_player + 1, length(game.player_hands)), game.player_hands[1][1].color))
     
     return game
 end
