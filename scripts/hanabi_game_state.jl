@@ -270,9 +270,9 @@ end
 # ============================================================================
 
 # A player's belief about a card slot
-struct CardBelief
+mutable struct CardBelief
     probs::Dict{Card, Float64}
-    known::Bool
+    known::Union{Bool, Card}
     known_color::Union{Symbol,Nothing}
     known_number::Union{Int,Nothing}
 end
@@ -316,25 +316,34 @@ function create_informed_belief(observed_cards::Vector{Card})
     
     return CardBelief(probs, false, nothing, nothing)
 end
-
+function get_visible_cards(full_game_state, player_indices)
+    visible_cards = Vector{Card}()
+    
+    # Add played cards (visible to everyone)
+    append!(visible_cards, full_game_state.played_cards)
+    
+    # Add discarded cards (visible to everyone)
+    append!(visible_cards, full_game_state.discard_pile)
+    
+    # Add cards from other players' hands
+    all_players = 1:length(full_game_state.player_hands)
+    invisible_players = Set(player_indices)
+    
+    for player_idx in all_players
+        if player_idx ∉ invisible_players
+            # This player's hand is visible to the specified players
+            append!(visible_cards, full_game_state.player_hands[player_idx])
+        end
+    end
+    
+    return visible_cards
+end
 # Initialize a player's knowledge from the full game state
 function init_player_knowledge(game::FullGameState, player_id::Int)
     n_players = length(game.player_hands)
     
     # Cards visible to this player (all cards not in their own hand)
-    visible_cards = Card[]
-    for (i, hand) in enumerate(game.player_hands)
-        if i != player_id
-            append!(visible_cards, hand)
-        end
-    end
-    append!(visible_cards, game.public.discard_pile)
-    for (color, level) in game.public.played_stacks
-        for num in 1:level
-            push!(visible_cards, Card(color, num))
-        end
-    end
-    
+    visible_cards = get_visible_cards(game, player_id)
     # Own hand beliefs
     own_hand_size = length(game.player_hands[player_id])
     own_beliefs = [create_informed_belief(visible_cards) for _ in 1:own_hand_size]
@@ -348,21 +357,7 @@ function init_player_knowledge(game::FullGameState, player_id::Int)
     theory = Dict{Int, Vector{CardBelief}}()
     for p in 1:n_players
         if p != player_id
-            # What player p can see: all cards except player p's hand
-            p_visible = Card[]
-            for (i, hand) in enumerate(game.player_hands)
-                if i != p
-                    append!(p_visible, hand)
-                end
-            end
-            append!(p_visible, game.public.discard_pile)
-            for (color, level) in game.public.played_stacks
-                for num in 1:level
-                    push!(p_visible, Card(color, num))
-                end
-            end
-            
-            p_hand_size = length(game.player_hands[p])
+            p_visible = get_visible_cards(game, [p, player_id])
             theory[p] = [create_informed_belief(p_visible) for _ in 1:p_hand_size]
         end
     end
