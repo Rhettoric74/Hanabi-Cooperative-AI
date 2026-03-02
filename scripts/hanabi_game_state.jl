@@ -108,6 +108,7 @@ mutable struct PublicGameState
         explosion_tokens::Int,
         discard_pile::Vector{Card},
         deck_size::Int,
+        hand_size::Int,
         hint_history::Vector{CardHint}
     )
         new(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history)
@@ -319,11 +320,11 @@ end
 function get_visible_cards(full_game_state, player_indices)
     visible_cards = Vector{Card}()
     
-    # Add played cards (visible to everyone)
-    append!(visible_cards, full_game_state.played_cards)
+    # Fix: played_stacks is a Dict{Symbol,Int} of colors -> numbers, not actual cards
+    # You need to convert the stack information to actual Card objects if you want to include them
     
     # Add discarded cards (visible to everyone)
-    append!(visible_cards, full_game_state.discard_pile)
+    append!(visible_cards, full_game_state.public.discard_pile)
     
     # Add cards from other players' hands
     all_players = 1:length(full_game_state.player_hands)
@@ -338,12 +339,13 @@ function get_visible_cards(full_game_state, player_indices)
     
     return visible_cards
 end
-# Initialize a player's knowledge from the full game state
+# Fix init_player_knowledge to properly initialize theory_of_mind for all other players
 function init_player_knowledge(game::FullGameState, player_id::Int)
     n_players = length(game.player_hands)
     
     # Cards visible to this player (all cards not in their own hand)
     visible_cards = get_visible_cards(game, player_id)
+    
     # Own hand beliefs
     own_hand_size = length(game.player_hands[player_id])
     own_beliefs = [create_informed_belief(visible_cards) for _ in 1:own_hand_size]
@@ -353,11 +355,13 @@ function init_player_knowledge(game::FullGameState, player_id::Int)
         p => game.player_hands[p] for p in 1:n_players if p != player_id
     )
     
-    # Theory of mind for each other player
+    # Theory of mind for each other player - properly initialize with beliefs
     theory = Dict{Int, Vector{CardBelief}}()
     for p in 1:n_players
         if p != player_id
+            # What player 'p' can see (their own hand + everything except player_id's hand)
             p_visible = get_visible_cards(game, [p, player_id])
+            p_hand_size = length(game.player_hands[p])
             theory[p] = [create_informed_belief(p_visible) for _ in 1:p_hand_size]
         end
     end
@@ -408,8 +412,8 @@ function execute_action!(game::FullGameState, action::PlayCard, choose_rainbow_s
     
     if can_play_card(game.public, card)
         if card.color == :rainbow
-            stack = choose_rainbow_stack(valid_rainbow_placements(game, card.number), game)
-            play_rainbow_card!(game, card, stack)
+            stack = choose_rainbow_stack(valid_rainbow_placements(game.public, card.number), game)
+            play_rainbow_card!(game.public, card, stack)
         else
             play_card!(game.public, card)
         end
@@ -488,4 +492,5 @@ function execute_action!(game::FullGameState, action::GiveHint)
     push!(game.history, "Player $giver tells player $reciever that they have $value in indices $card_indices.")
     push!(game.public.hint_history, CardHint(giver, reciever, value, card_indices))
     game.current_player = mod1(game.current_player + 1, length(game.player_hands))
+    return game
 end
