@@ -204,3 +204,279 @@ function update_beliefs_action!(agent::RandomHanabiAgent, action::Action,
     
     return agent
 end
+
+"""
+    GreedyHanabiAgent <: AbstractHanabiAgent
+
+A greedy agent that:
+- Uses literal belief updates
+- Plays cards when probability of being playable ≥ threshold
+- Gives hints about unknown attributes, prioritizing playable cards
+- Discards cards least likely to be playable
+"""
+mutable struct GreedyHanabiAgent <: AbstractHanabiAgent
+    player_id::Int
+    player_knowledge::PlayerKnowledge
+    play_threshold::Float64  # Probability threshold for playing
+    # Constructor with default threshold
+    function GreedyHanabiAgent(player_id::Int, knowledge::PlayerKnowledge, play_threshold::Float64 = 0.6)
+        return new(player_id, knowledge, play_threshold)
+    end
+end
+
+# Constructor for easy creation (matches RandomHanabiAgent interface)
+function GreedyHanabiAgent(player_id::Int, knowledge::PlayerKnowledge)
+    return GreedyHanabiAgent(player_id, knowledge, 0.6)
+end
+
+function choose_action(agent::GreedyHanabiAgent, game::FullGameState)
+    knowledge = agent.player_knowledge
+    public = game.public
+    
+    # Calculate play probabilities for each card in hand
+    play_probs = [calculate_play_probability(knowledge.own_hand[i], public) 
+                  for i in 1:length(knowledge.own_hand)]
+    
+    # 1. Check if any card meets play threshold
+    for (idx, prob) in enumerate(play_probs)
+        if prob ≥ agent.play_threshold
+            return PlayCard(agent.player_id, idx)
+        end
+    end
+    
+    # 2. If info tokens available, consider giving hints
+    if public.info_tokens > 0
+        hint_action = choose_hint_action(agent, game)
+        if !isnothing(hint_action)
+            return hint_action
+        end
+    end
+    
+    # 3. If discarding is allowed, discard least playable card
+    if public.info_tokens < 8
+        # Find card with lowest play probability
+        min_prob_idx = argmin(play_probs)
+        return DiscardCard(agent.player_id, min_prob_idx)
+    end
+    
+    # 4. Fallback: if can't discard (max tokens) and no playable cards, must hint
+    # (This should only happen in edge cases)
+    if public.info_tokens > 0
+        # Try to give any hint, even if not optimal
+        fallback_hint = choose_any_hint(agent, game)
+        if !isnothing(fallback_hint)
+            return fallback_hint
+        end
+    end
+    
+    # 5. Ultimate fallback: play the card with highest probability
+    best_idx = argmax(play_probs)
+    return PlayCard(agent.player_id, best_idx)
+end
+
+"""
+    calculate_play_probability(belief::CardBelief, public::PublicGameState) -> Float64
+
+Calculate probability that a card is playable based on current beliefs.
+"""
+function calculate_play_probability(belief::CardBelief, public::PublicGameState)
+    prob = 0.0
+    
+    for (card, p) in belief.probs
+        if p > 0 && can_play_card(public, card)
+            prob += p
+        end
+    end
+    
+    return prob
+end
+
+"""
+    choose_hint_action(agent::GreedyHanabiAgent, game::FullGameState) -> Union{GiveHint, Nothing}
+
+Choose the best hint to give based on:
+1. Prioritize revealing playable cards
+2. Prefer hints about unknown attributes
+3. Prefer hints that give the most new information
+"""
+function choose_hint_action(agent::GreedyHanabiAgent, game::FullGameState)
+    best_hint = nothing
+    best_score = -1.0
+    
+    # Consider each other player as a potential hint receiver
+    for receiver in 1:length(game.player_hands)
+        receiver == agent.player_id && continue
+        
+        # Get receiver's actual hand (for determining playable cards)
+        receiver_hand = game.player_hands[receiver]
+        
+        # Get what receiver knows about their own hand (from agent's theory of mind)
+        receiver_knowledge = agent.player_knowledge.theory_of_mind[receiver]
+        
+        # Find playable cards in receiver's hand
+        playable_indices = Int[]
+        for (i, card) in enumerate(receiver_hand)
+            if can_play_card(game.public, card)
+                push!(playable_indices, i)
+            end
+        end
+        
+        # Consider color hints
+        colors = [:red, :white, :green, :blue, :yellow, :rainbow]
+        for color in colors
+            # Find indices with this color
+            indices = [i for (i, card) in enumerate(receiver_hand) if card.color == color]
+            isempty(indices) && continue
+            
+            # Check if receiver already knows this color for these cards
+            already_known = all(i -> !isnothing(receiver_knowledge[i].known_color) && 
+                                   receiver_knowledge[i].known_color == color, indices)
+            already_known && continue
+            
+            # Score this hint
+            score = score_hint(indices, playable_indices, receiver_knowledge)
+            
+            if score > best_score
+                best_score = score
+                best_hint = GiveHint(agent.player_id, receiver, color)
+            end
+        end
+        
+        # Consider number hints
+        for number in 1:5
+            indices = [i for (i, card) in enumerate(receiver_hand) if card.number == number]
+            isempty(indices) && continue
+            
+            # Check if receiver already knows this number for these cards
+            already_known = all(i -> !isnothing(receiver_knowledge[i].known_number) && 
+                                   receiver_knowledge[i].known_number == number, indices)
+            already_known && continue
+            
+            # Score this hint
+            score = score_hint(indices, playable_indices, receiver_knowledge)
+            
+            if score > best_score
+                best_score = score
+                best_hint = GiveHint(agent.player_id, receiver, number)
+            end
+        end
+    end
+    
+    return best_hint
+end
+
+"""
+    score_hint(hint_indices::Vector{Int}, playable_indices::Vector{Int}, 
+               receiver_knowledge::Vector{CardBelief}) -> Float64
+
+Score a potential hint based on:
+- How many cards it gives new information about
+- Whether it reveals playable cards
+- How uncertain the receiver was about those cards
+"""
+function score_hint(hint_indices::Vector{Int}, playable_indices::Vector{Int}, 
+                    receiver_knowledge::Vector{CardBelief})
+    score = 0.0
+    
+    for idx in hint_indices
+        belief = receiver_knowledge[idx]
+        
+        # Base score for giving any new information
+        if isnothing(belief.known_color) || isnothing(belief.known_number)
+            score += 1.0
+        end
+        
+        # Bonus for cards that are playable
+        if idx in playable_indices
+            score += 3.0
+        end
+        
+        # Bonus for cards that were highly uncertain
+        # (measure uncertainty by number of possible cards)
+        n_possible = sum(belief.probs[card] > 0 for card in keys(belief.probs))
+        if n_possible > 1
+            score += 0.5 * (n_possible / 10)  # Higher uncertainty = higher bonus
+        end
+    end
+    
+    # Bonus for hinting about multiple cards
+    score += 0.5 * length(hint_indices)
+    
+    return score
+end
+
+"""
+    choose_any_hint(agent::GreedyHanabiAgent, game::FullGameState) -> Union{GiveHint, Nothing}
+
+Fallback: give any legal hint when no good hints are found.
+"""
+function choose_any_hint(agent::GreedyHanabiAgent, game::FullGameState)
+    for receiver in 1:length(game.player_hands)
+        receiver == agent.player_id && continue
+        hand = game.player_hands[receiver]
+        
+        # Try colors first
+        colors = unique(c.color for c in hand)
+        if !isempty(colors)
+            return GiveHint(agent.player_id, receiver, colors[1])
+        end
+        
+        # Then numbers
+        numbers = unique(c.number for c in hand)
+        if !isempty(numbers)
+            return GiveHint(agent.player_id, receiver, numbers[1])
+        end
+    end
+    return nothing
+end
+
+# Reuse the same belief update functions from RandomHanabiAgent
+function update_beliefs_hint!(agent::GreedyHanabiAgent, hint::CardHint, game::FullGameState)
+    if hint.reciever == agent.player_id
+        # Hint was given to this agent
+        label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
+    else
+        # Hint was given to someone else - update theory of mind
+        if haskey(agent.player_knowledge.theory_of_mind, hint.reciever)
+            label_hinted_cards!(agent.player_knowledge.theory_of_mind[hint.reciever], 
+                               hint.indices, hint.attribute)
+        end
+    end
+    return agent
+end
+
+function update_beliefs_action!(agent::GreedyHanabiAgent, action::Action,
+                                acting_player::Int, game::FullGameState)
+    # Update beliefs about own hand
+    visible_cards = get_visible_cards(game, agent.player_id)
+    literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
+    
+    # Update theory of mind for other players
+    for player in 1:length(game.player_hands)
+        if player != agent.player_id
+            if haskey(agent.player_knowledge.theory_of_mind, player)
+                player_visible = get_visible_cards(game, [player, agent.player_id])
+                literal_belief_update!(agent.player_knowledge.theory_of_mind[player], player_visible)
+            end
+        end
+    end
+    
+    # Update public information in knowledge
+    agent.player_knowledge.info_tokens = game.public.info_tokens
+    agent.player_knowledge.explosion_tokens = game.public.explosion_tokens
+    agent.player_knowledge.deck_size = game.public.deck_size
+    agent.player_knowledge.discard_pile = copy(game.public.discard_pile)
+    agent.player_knowledge.played_stacks = copy(game.public.played_stacks)
+    
+    return agent
+end
+
+# Helper function to find index of minimum value
+function argmin(v::Vector{Float64})
+    return findmin(v)[2]
+end
+
+# Helper function to find index of maximum value
+function argmax(v::Vector{Float64})
+    return findmax(v)[2]
+end

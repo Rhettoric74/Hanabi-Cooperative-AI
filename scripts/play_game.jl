@@ -41,5 +41,5 @@ function play_game_with_logging(agents::Vector{<:AbstractHanabiAgent}, game::Ful
 end
 
 game = init_game(4, 4)
-agents = [RandomHanabiAgent(i, init_player_knowledge(game, i)) for i in 1:4]
-play_game_with_logging(agents)
+agents = [GreedyHanabiAgent(i, init_player_knowledge(game, i), 0.5) for i in 1:4]
+play_game_with_logging(agents, game)

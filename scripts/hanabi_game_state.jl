@@ -108,7 +108,6 @@ mutable struct PublicGameState
         explosion_tokens::Int,
         discard_pile::Vector{Card},
         deck_size::Int,
-        hand_size::Int,
         hint_history::Vector{CardHint}
     )
         new(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history)
@@ -123,9 +122,9 @@ function PublicGameState(
     deck_size=60,
     hint_history=CardHint[]
 )
+    # Call the default constructor, not the function itself
     return PublicGameState(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history)
 end
-
 const MAX_SCORE = 25  # 5 colors × 5 numbers
 const WIN_CONDITION = Dict(:red=>5, :white=>5, :green=>5, :blue=>5, :yellow=>5)
 
@@ -278,7 +277,7 @@ mutable struct CardBelief
     known_number::Union{Int,Nothing}
 end
 # Player's knowledge state (what they know about the game)
-struct PlayerKnowledge
+mutable struct PlayerKnowledge
     own_hand::Vector{CardBelief}
     other_hands::Dict{Int, Vector{Card}}  # Direct observation
     discard_pile::Vector{Card}
