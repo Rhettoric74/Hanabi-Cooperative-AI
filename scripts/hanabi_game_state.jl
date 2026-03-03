@@ -100,6 +100,7 @@ mutable struct PublicGameState
     discard_pile::Vector{Card}
     deck_size::Int
     hint_history::Vector{CardHint}
+    last_turn::Bool
     
     # Inner constructor with positional arguments
     function PublicGameState(
@@ -108,9 +109,10 @@ mutable struct PublicGameState
         explosion_tokens::Int,
         discard_pile::Vector{Card},
         deck_size::Int,
-        hint_history::Vector{CardHint}
+        hint_history::Vector{CardHint},
+        last_turn = false
     )
-        new(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history)
+        new(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history, last_turn)
     end
 end
 # Outer constructor with defaults (positional, not keyword)
@@ -120,10 +122,11 @@ function PublicGameState(
     explosion_tokens=0,
     discard_pile=Card[],
     deck_size=60,
-    hint_history=CardHint[]
+    hint_history=CardHint[],
+    last_turn = false
 )
     # Call the default constructor, not the function itself
-    return PublicGameState(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history)
+    return PublicGameState(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history, last_turn)
 end
 const MAX_SCORE = 25  # 5 colors × 5 numbers
 const WIN_CONDITION = Dict(:red=>5, :white=>5, :green=>5, :blue=>5, :yellow=>5)
@@ -215,6 +218,9 @@ function is_game_over(state::PublicGameState)
     if all(state.played_stacks[color] == 5 for color in keys(WIN_CONDITION))
         return true, :victory
     end
+    if state.last_turn == true
+        return true, :deck_runout_loss
+    end
     
     return false, :ongoing
 end
@@ -235,15 +241,17 @@ mutable struct FullGameState
     deck::Vector{Card}
     current_player::Int
     history::Vector{String}
+    last_turn::Union{Int, Nothing}
     
     function FullGameState(
         public=PublicGameState(),
         player_hands=Vector{Card}[],
         deck=Card[],
         current_player=1,
-        history=String[]
+        history=String[],
+        last_turn = nothing
     )
-        new(public, player_hands, deck, current_player, history)
+        new(public, player_hands, deck, current_player, history, last_turn)
     end
 end
 
@@ -396,6 +404,16 @@ struct GiveHint <: Action
     receiver::Int
     hint_value::Union{Symbol, Int}
 end
+function attempt_draw!(game::FullGameState, player_hand::Vector{Card}, card_index::Int)
+    if !isempty(game.deck)
+        new_card = popfirst!(game.deck)
+        insert!(player_hand, card_index, new_card)
+        game.public.deck_size = length(game.deck)
+    elseif isnothing(game.last_turn)
+        game.last_turn = game.current_player
+        println("Deck has run out!")
+    end
+end
 # TODO: make this more sophisticated, usually it's a player's choice which stack a rainbow card get's played on
 # Player's don't need to specify which stack until after they play the card.
 function random_rainbow_choice(options, game)
@@ -408,6 +426,7 @@ function execute_action!(game::FullGameState, action::PlayCard, choose_rainbow_s
     card = game.player_hands[player][action.card_index]
     
     push!(game.history, "Player $player attempts to play $card")
+    println("Player $player attempts to play $card")
     
     if can_play_card(game.public, card)
         if card.color == :rainbow
@@ -418,30 +437,20 @@ function execute_action!(game::FullGameState, action::PlayCard, choose_rainbow_s
         end
         push!(game.history, "  ✓ Successful")
         
-        # Remove card from hand
-        deleteat!(game.player_hands[player], action.card_index)
-        
-        # Draw new card if available
-        if !isempty(game.deck)
-            new_card = popfirst!(game.deck)
-            push!(game.player_hands[player], new_card)
-            game.public.deck_size = length(game.deck)
-        end
+       
     else
         fail_play!(game.public, card)
         push!(game.history, "  ✗ Failed (explosion)")
-        
-        deleteat!(game.player_hands[player], action.card_index)
-        
-        if !isempty(game.deck)
-            new_card = popfirst!(game.deck)
-            push!(game.player_hands[player], new_card)
-            game.public.deck_size = length(game.deck)
-        end
     end
-    
+    deleteat!(game.player_hands[player], action.card_index)
+        
+    attempt_draw!(game, game.player_hands[action.player], action.card_index)
     game.current_player = mod1(game.current_player + 1, length(game.player_hands))
+    if game.current_player == game.last_turn
+        game.public.last_turn = true
+    end
     return game
+
 end
 
 # Execute a discard action
@@ -456,16 +465,17 @@ function execute_action!(game::FullGameState, action::DiscardCard)
     push!(game.history, "Player $player discards $card")
     
     discard_card!(game.public, card)
-    deleteat!(game.player_hands[player], action.card_index)
+    
     game.public.info_tokens += 1
     
-    if !isempty(game.deck)
-        new_card = popfirst!(game.deck)
-        push!(game.player_hands[player], new_card)
-        game.public.deck_size = length(game.deck)
-    end
+    deleteat!(game.player_hands[player], action.card_index)
+    
+    attempt_draw!(game, game.player_hands[action.player], action.card_index)
     
     game.current_player = mod1(game.current_player + 1, length(game.player_hands))
+    if game.current_player == game.last_turn
+        game.public.last_turn = true
+    end
     return game
 end
 
@@ -491,5 +501,9 @@ function execute_action!(game::FullGameState, action::GiveHint)
     push!(game.history, "Player $giver tells player $reciever that they have $value in indices $card_indices.")
     push!(game.public.hint_history, CardHint(giver, reciever, value, card_indices))
     game.current_player = mod1(game.current_player + 1, length(game.player_hands))
+    if game.current_player == game.last_turn
+        game.public.last_turn = true
+    end
     return game
+
 end

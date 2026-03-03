@@ -63,8 +63,16 @@ function label_hinted_cards!(card_beliefs::Vector{CardBelief}, indices::Vector{I
         else
             card_belief.known_color = attribute
         end
+        
+        # If both color and number are now known, we know the exact card
         if !isnothing(card_belief.known_number) && !isnothing(card_belief.known_color)
-            card_belief.known = true
+            # Find the actual card that matches both
+            for (card, _) in card_belief.probs
+                if card.color == card_belief.known_color && card.number == card_belief.known_number
+                    card_belief.known = card  # ← Store the Card, not true
+                    break
+                end
+            end
         end
     end
 end
@@ -90,13 +98,14 @@ function literal_belief_update!(card_beliefs::Vector{CardBelief}, observed_cards
             end
         end
         
-        # Handle the case where no cards match (shouldn't happen in a valid game)
+        # Handle the case where no cards match
+        # should only happen for theory of mind updates when a player
+        # that another player has been told about a card, but can see
+        # the only remaining card of that color/number in the player's hand
         if total_remaining == 0
-            # If no cards match constraints, reset beliefs to uniform over all remaining cards
             total_remaining = sum(values(remaining))
             if total_remaining == 0
-                # If no cards remain at all, can't update
-                continue
+                probs[card] = 0.0
             end
         end
         
@@ -168,8 +177,19 @@ function choose_action(agent::RandomHanabiAgent, game::FullGameState)
 
     # Safety check – should never happen in a normal game
     isempty(actions) && error("No legal actions available for player $(agent.player_id)")
+    action = rand(actions)
+    if action isa PlayCard || action isa DiscardCard
+        if !isempty(game.deck)
+            agent.player_knowledge.own_hand[action.card_index].known = false
+            agent.player_knowledge.own_hand[action.card_index].known_color = nothing
+            agent.player_knowledge.own_hand[action.card_index].known_number = nothing
+        else
+            # remove beliefs about the card if there's no new cards to draw
+            deleteat!(agent.player_knowledge.own_hand, action.card_idx)
+        end
+    end
 
-    return rand(actions)
+    return action
 end
 
 function update_beliefs_hint!(agent::RandomHanabiAgent, hint::CardHint, game::FullGameState)
@@ -236,42 +256,54 @@ function choose_action(agent::GreedyHanabiAgent, game::FullGameState)
     # Calculate play probabilities for each card in hand
     play_probs = [calculate_play_probability(knowledge.own_hand[i], public) 
                   for i in 1:length(knowledge.own_hand)]
-    
+    action = nothing
     # 1. Check if any card meets play threshold
     for (idx, prob) in enumerate(play_probs)
         if prob ≥ agent.play_threshold
-            return PlayCard(agent.player_id, idx)
+            println(prob)
+            action = PlayCard(agent.player_id, idx)
         end
     end
-    
     # 2. If info tokens available, consider giving hints
-    if public.info_tokens > 0
+    if isnothing(action) && public.info_tokens > 0
         hint_action = choose_hint_action(agent, game)
         if !isnothing(hint_action)
-            return hint_action
+            action = hint_action
         end
     end
     
     # 3. If discarding is allowed, discard least playable card
-    if public.info_tokens < 8
+    if isnothing(action) && public.info_tokens < 8
         # Find card with lowest play probability
         min_prob_idx = argmin(play_probs)
-        return DiscardCard(agent.player_id, min_prob_idx)
+        action = DiscardCard(agent.player_id, min_prob_idx)
     end
     
     # 4. Fallback: if can't discard (max tokens) and no playable cards, must hint
     # (This should only happen in edge cases)
-    if public.info_tokens > 0
+    if isnothing(action) && public.info_tokens > 0
         # Try to give any hint, even if not optimal
         fallback_hint = choose_any_hint(agent, game)
         if !isnothing(fallback_hint)
-            return fallback_hint
+            action = fallback_hint
         end
     end
     
-    # 5. Ultimate fallback: play the card with highest probability
-    best_idx = argmax(play_probs)
-    return PlayCard(agent.player_id, best_idx)
+    # 5. Ultimate fallback: discard the card with the lowest probability
+    if isnothing(action)
+        worst_idx = argmin(play_probs)
+        action = DiscardCard(agent.player_id, worst_idx)
+    end
+    if action isa PlayCard || action isa DiscardCard
+        if !isempty(game.deck)
+            agent.player_knowledge.own_hand[action.card_index].known = false
+            agent.player_knowledge.own_hand[action.card_index].known_color = nothing
+            agent.player_knowledge.own_hand[action.card_index].known_number = nothing
+        else
+            deleteat!(agent.player_knowledge.own_hand, action.card_index)
+        end
+    end
+    return action
 end
 
 """

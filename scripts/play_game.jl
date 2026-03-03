@@ -12,6 +12,7 @@ function play_game_with_logging(agents::Vector{<:AbstractHanabiAgent}, game::Ful
         player = game.current_player
         println("Turn $turn - Player $player")
         println("  Info: $(game.public.info_tokens) | Fuse: $(game.public.explosion_tokens)")
+        println("   $(game.public.played_stacks)")
         println("  Score: $(current_score(game.public))")
         
         action = choose_action(agents[player], game)
@@ -41,5 +42,5 @@ function play_game_with_logging(agents::Vector{<:AbstractHanabiAgent}, game::Ful
 end
 
 game = init_game(4, 4)
-agents = [GreedyHanabiAgent(i, init_player_knowledge(game, i), 0.5) for i in 1:4]
+agents = [GreedyHanabiAgent(i, init_player_knowledge(game, i), 0.99) for i in 1:4]
 play_game_with_logging(agents, game)
