@@ -1,4 +1,5 @@
 include("agent.jl")
+using Statistics
 function play_game_with_logging(agents::Vector{<:AbstractHanabiAgent}, game::FullGameState, seed=nothing)
     !isnothing(seed) && Random.seed!(seed)
     
@@ -41,6 +42,16 @@ function play_game_with_logging(agents::Vector{<:AbstractHanabiAgent}, game::Ful
     return score
 end
 
-game = init_game(4, 4)
-agents = [GreedyHanabiAgent(i, init_player_knowledge(game, i), 0.99) for i in 1:4]
-play_game_with_logging(agents, game)
+num_simulations = 100
+scores = Int[]
+num_players = 5
+num_cards = 4
+threshold = 0.75
+for i in 1:num_simulations
+    cur_game = init_game(num_players, 5)
+    cur_agents = [GreedyHanabiAgent(i, init_player_knowledge(cur_game, i), threshold) for i in 1:num_players]
+    play_game_with_logging(cur_agents, cur_game)
+    push!(scores, current_score(cur_game.public))
+end
+println("Average score over 100 simulations: $(mean(scores))")
+println("Standard deviation of scores over 100 simulations: $(std(scores))")
