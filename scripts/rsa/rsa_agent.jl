@@ -24,6 +24,7 @@ mutable struct RSAHanabiAgent <: AbstractHanabiAgent
     θ_discard::Float64     # Discard threshold (default 0.70)
     qud_mode::Symbol       # :dynamic, :play, or :discard
     clue_threshold::Float64 # Min S1 score to prefer clue (default 0.6)
+    min_clue_informativity::Float64 # Min entropy reduction to give clue (default 0.01 bits)
     
     # Constructor with defaults
     function RSAHanabiAgent(
@@ -33,9 +34,10 @@ mutable struct RSAHanabiAgent <: AbstractHanabiAgent
         θ_play::Float64 = 0.85,
         θ_discard::Float64 = 0.70,
         qud_mode::Symbol = :dynamic,
-        clue_threshold::Float64 = 0.6
+        clue_threshold::Float64 = 0.6,
+        min_clue_informativity::Float64 = 0.01
     )
-        new(player_id, player_knowledge, α, θ_play, θ_discard, qud_mode, clue_threshold)
+        new(player_id, player_knowledge, α, θ_play, θ_discard, qud_mode, clue_threshold, min_clue_informativity)
     end
 end
 
@@ -140,7 +142,8 @@ function choose_action(agent::RSAHanabiAgent, game::FullGameState)
                         α=agent.α,
                         qud=current_qud,
                         receiver_id=receiver,
-                        giver_id=agent.player_id
+                        giver_id=agent.player_id,
+                        min_informativity=agent.min_clue_informativity
                     )
                     
                     if clue_score > best_clue_score
@@ -153,7 +156,8 @@ function choose_action(agent::RSAHanabiAgent, game::FullGameState)
                             qud=current_qud,
                             receiver_id=receiver,
                             giver_id=agent.player_id,
-                            stochastic=false
+                            stochastic=false,
+                            min_informativity=agent.min_clue_informativity
                         )
                     end
                 end
@@ -205,11 +209,19 @@ function choose_action(agent::RSAHanabiAgent, game::FullGameState)
         action = best_clue
     end
     
-    # 5. Ultimate fallback: discard least playable card
-    if isnothing(action)
+    # 5. Ultimate fallback: discard least playable card (only if tokens not maxed)
+    if isnothing(action) && public.info_tokens < 8
         # Choose card with lowest play probability
         worst_idx = argmin(play_probs)
         action = DiscardCard(agent.player_id, worst_idx)
+    end
+    
+    # 6. Absolute last resort: play least risky card (when tokens maxed and no clues)
+    if isnothing(action)
+        # This happens when: tokens=8, no good clues, no confident plays
+        # Better to play than do nothing
+        best_idx = argmax(play_probs)
+        action = PlayCard(agent.player_id, best_idx)
     end
     
     # Update beliefs about cards that will be replaced
@@ -233,7 +245,8 @@ end
 
 Update beliefs after a hint is given.
 - If agent received hint: use pragmatic listener (L₁) for RSA inference
-- If other player received hint: update theory of mind with literal update
+- If other player received hint: update theory of mind IMMEDIATELY with literal update
+  (first-order ToM: all agents immediately recognize what the receiver now knows)
 """
 function update_beliefs_hint!(agent::RSAHanabiAgent, hint::CardHint, game::FullGameState)
     if hint.reciever == agent.player_id
@@ -249,7 +262,8 @@ function update_beliefs_hint!(agent::RSAHanabiAgent, hint::CardHint, game::FullG
                 α=α,
                 qud=qud,
                 receiver_id=receiver_id,
-                giver_id=giver_id
+                giver_id=giver_id,
+                min_informativity=agent.min_clue_informativity
             )
         end
         
@@ -263,13 +277,17 @@ function update_beliefs_hint!(agent::RSAHanabiAgent, hint::CardHint, game::FullG
             speaker_fn=speaker_fn
         )
     else
-        # Another player received hint - update theory of mind
+        # Another player received hint - update theory of mind IMMEDIATELY
+        # This implements first-order ToM: we immediately recognize what the receiver knows
         if haskey(agent.player_knowledge.theory_of_mind, hint.reciever)
-            # Use literal update for theory of mind (simpler)
-            label_hinted_cards!(
+            # Get visible cards to apply consistent literal update
+            visible_cards = get_visible_cards(game, [agent.player_id, hint.reciever])
+            
+            # Apply literal listener update (more principled than just labeling)
+            agent.player_knowledge.theory_of_mind[hint.reciever] = literal_listener(
                 agent.player_knowledge.theory_of_mind[hint.reciever],
-                hint.indices,
-                hint.attribute
+                hint,
+                visible_cards
             )
         end
     end

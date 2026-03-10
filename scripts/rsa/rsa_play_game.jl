@@ -47,6 +47,7 @@ function play_rsa_game(agents::Vector{RSAHanabiAgent}, game::FullGameState;
         push!(log_content, "θ_discard (discard threshold): $(agents[1].θ_discard)")
         push!(log_content, "QUD mode: $(agents[1].qud_mode)")
         push!(log_content, "Clue threshold: $(agents[1].clue_threshold)")
+        push!(log_content, "Min clue informativity: $(agents[1].min_clue_informativity) bits")
         push!(log_content, "")
         push!(log_content, "GAME TURNS")
         push!(log_content, "="^80)
@@ -194,6 +195,7 @@ end
     run_rsa_simulations(num_simulations::Int, num_players::Int, cards_per_player::Int;
                         α::Float64=1.0, θ_play::Float64=0.85, θ_discard::Float64=0.70,
                         qud_mode::Symbol=:dynamic, clue_threshold::Float64=0.6,
+                        min_clue_informativity::Float64=0.01,
                         verbose::Bool=false, log_file::Union{String,Nothing}=nothing,
                         save_individual_games::Bool=false, experiment_name::String="rsa_default") -> Dict
 
@@ -210,6 +212,7 @@ function run_rsa_simulations(
     θ_discard::Float64 = 0.70,
     qud_mode::Symbol = :dynamic,
     clue_threshold::Float64 = 0.6,
+    min_clue_informativity::Float64 = 0.01,
     verbose::Bool = false,
     log_file::Union{String,Nothing} = nothing,
     save_individual_games::Bool = false,
@@ -233,6 +236,7 @@ function run_rsa_simulations(
     println("\n" * "="^70)
     println("Running $num_simulations simulations with RSA agents")
     println("Parameters: α=$α, θ_play=$θ_play, θ_discard=$θ_discard, qud=$qud_mode")
+    println("            clue_threshold=$clue_threshold, min_informativity=$min_clue_informativity bits")
     if save_individual_games
         println("Individual game logs: ENABLED")
     end
@@ -258,7 +262,8 @@ function run_rsa_simulations(
                 θ_play,
                 θ_discard,
                 qud_mode,
-                clue_threshold
+                clue_threshold,
+                min_clue_informativity
             ) for j in 1:num_players
         ]
         
@@ -320,7 +325,8 @@ function run_rsa_simulations(
     if !isnothing(log_file)
         save_simulation_log(log_file, "RSA Agent", results, num_simulations, num_players, 
                           cards_per_player; α=α, θ_play=θ_play, θ_discard=θ_discard, 
-                          qud_mode=qud_mode, clue_threshold=clue_threshold)
+                          qud_mode=qud_mode, clue_threshold=clue_threshold,
+                          min_clue_informativity=min_clue_informativity)
     end
     
     return results

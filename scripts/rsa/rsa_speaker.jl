@@ -5,6 +5,101 @@ include("../hanabi_game_state.jl")
 include("../agent.jl")
 include("rsa_listener.jl")
 
+# =============================================================================
+# ENTROPY-BASED INFORMATIVITY FUNCTIONS
+# =============================================================================
+
+"""
+    compute_belief_entropy(belief::CardBelief) -> Float64
+
+Compute the Shannon entropy of a single card belief distribution.
+H(B) = -Σ p(card) log₂(p(card))
+Returns entropy in bits.
+"""
+function compute_belief_entropy(belief::CardBelief)
+    entropy = 0.0
+    for (card, prob) in belief.probs
+        if prob > 0
+            entropy -= prob * log2(prob)
+        end
+    end
+    return entropy
+end
+
+"""
+    compute_weighted_belief_entropy(belief::CardBelief, public::PublicGameState, qud::Symbol) -> Float64
+
+Compute weighted entropy where playable (or discardable) cards get higher weight.
+This implements QUD-weighted informativity: we care more about reducing uncertainty
+on cards that matter for the current goal.
+"""
+function compute_weighted_belief_entropy(belief::CardBelief, public::PublicGameState, qud::Symbol)
+    entropy = 0.0
+    total_weight = 0.0
+    
+    for (card, prob) in belief.probs
+        if prob > 0
+            # Compute weight based on QUD
+            weight = 1.0
+            if qud == :play && can_play_card(public, card)
+                weight = 3.0  # Heavily weight playable cards
+            elseif qud == :discard && is_safe_to_discard(card, public)
+                weight = 2.0  # Weight safe discards moderately
+            end
+            
+            total_weight += weight * prob
+            entropy -= weight * prob * log2(prob)
+        end
+    end
+    
+    # Normalize by total weight to keep entropy scale interpretable
+    if total_weight > 0
+        entropy /= total_weight
+    end
+    
+    return entropy
+end
+
+"""
+    compute_hand_entropy(beliefs::Vector{CardBelief}, public::PublicGameState, qud::Symbol) -> Float64
+
+Compute total entropy across all cards in hand (with QUD weighting).
+"""
+function compute_hand_entropy(beliefs::Vector{CardBelief}, public::PublicGameState, qud::Symbol)
+    total_entropy = 0.0
+    for belief in beliefs
+        total_entropy += compute_weighted_belief_entropy(belief, public, qud)
+    end
+    return total_entropy
+end
+
+"""
+    compute_informativity_entropy(prior_beliefs::Vector{CardBelief}, 
+                                   posterior_beliefs::Vector{CardBelief},
+                                   public::PublicGameState,
+                                   qud::Symbol) -> Float64
+
+Compute informativity as entropy reduction (information gain).
+I(clue) = H(prior) - H(posterior)
+Higher values mean the clue provides more information.
+Returns information gain in bits.
+"""
+function compute_informativity_entropy(
+    prior_beliefs::Vector{CardBelief},
+    posterior_beliefs::Vector{CardBelief},
+    public::PublicGameState,
+    qud::Symbol
+)
+    prior_entropy = compute_hand_entropy(prior_beliefs, public, qud)
+    posterior_entropy = compute_hand_entropy(posterior_beliefs, public, qud)
+    
+    # Information gain = reduction in entropy
+    informativity = prior_entropy - posterior_entropy
+    
+    # Ensure non-negative (numerical stability)
+    return max(0.0, informativity)
+end
+
 """
     qud_play_score(clue_indices::Vector{Int}, hand::Vector{Card}, public::PublicGameState) -> Float64
 
@@ -167,12 +262,15 @@ end
 """
     pragmatic_speaker(partner_hand::Vector{Card}, partner_beliefs::Vector{CardBelief}, 
                       public::PublicGameState; α::Float64=1.0, qud::Symbol=:play,
-                      receiver_id::Int, giver_id::Int) -> Dict{CardHint, Float64}
+                      receiver_id::Int, giver_id::Int, min_informativity::Float64=0.01) -> Dict{CardHint, Float64}
 
 Pragmatic speaker (S₁): Chooses clues by reasoning about how the listener will interpret them.
-P_S1(u | h*) = softmax(α · [log P_L0(h* | u) + QUD_score(u, h*)])
+Uses entropy-based informativity with QUD weighting.
 
-Returns a probability distribution over legal clues.
+P_S1(u | h*) = softmax(α · [entropy_reduction(u) + QUD_score(u, h*)])
+
+Returns a probability distribution over legal clues that meet the min_informativity threshold.
+Clues with information gain below min_informativity are filtered out.
 """
 function pragmatic_speaker(
     partner_hand::Vector{Card},
@@ -181,7 +279,8 @@ function pragmatic_speaker(
     α::Float64 = 1.0,
     qud::Symbol = :play,
     receiver_id::Int,
-    giver_id::Int
+    giver_id::Int,
+    min_informativity::Float64 = 0.01
 )
     # Enumerate all legal clues
     legal_clues = enumerate_legal_clues(partner_hand, giver_id, receiver_id)
@@ -192,13 +291,9 @@ function pragmatic_speaker(
     
     # Score each clue
     clue_scores = Float64[]
+    valid_clues = CardHint[]
     
     for clue in legal_clues
-        # Compute literal listener probability: P_L0(h* | u)
-        # The literal listener filters to hands consistent with the clue
-        # For the true hand, this is always 1.0 if clue is truthful
-        # So we focus on QUD score which measures informativity
-        
         # Get visible cards from receiver's perspective
         visible_cards = Vector{Card}()
         # In practice, receiver can see all other players' cards and discard pile
@@ -208,18 +303,18 @@ function pragmatic_speaker(
         # Apply literal listener to see how beliefs would update
         literal_updated = literal_listener(partner_beliefs, clue, visible_cards)
         
-        # Compute informativity: how much does this clue narrow down beliefs?
-        informativity = 0.0
-        for (prior_belief, post_belief) in zip(partner_beliefs, literal_updated)
-            # Count number of possible cards before and after
-            prior_possible = sum(p > 0 for p in values(prior_belief.probs))
-            post_possible = sum(p > 0 for p in values(post_belief.probs))
-            
-            # Higher score for greater reduction in uncertainty
-            if prior_possible > 0
-                reduction = (prior_possible - post_possible) / prior_possible
-                informativity += reduction
-            end
+        # Compute entropy-based informativity (information gain in bits)
+        informativity = compute_informativity_entropy(
+            partner_beliefs,
+            literal_updated,
+            public,
+            qud
+        )
+        
+        # Filter out clues with insufficient informativity (redundant hints)
+        if informativity < min_informativity
+            # This clue provides negligible new information - skip it
+            continue
         end
         
         # Compute QUD score
@@ -230,9 +325,18 @@ function pragmatic_speaker(
             qud_score = qud_discard_score(clue.indices, partner_hand, public)
         end
         
-        # Combined score: informativity + QUD utility
-        total_score = informativity + qud_score
+        # Combined score: entropy reduction + QUD utility
+        # Informativity is already in interpretable units (bits)
+        # Scale QUD score to be comparable
+        total_score = informativity + 0.5 * qud_score
+        
+        push!(valid_clues, clue)
         push!(clue_scores, total_score)
+    end
+    
+    # If no clues meet informativity threshold, return empty distribution
+    if isempty(valid_clues)
+        return Dict{CardHint, Float64}()
     end
     
     # Apply softmax with rationality parameter α
@@ -244,7 +348,7 @@ function pragmatic_speaker(
     
     # Return distribution
     clue_dist = Dict{CardHint, Float64}()
-    for (clue, prob) in zip(legal_clues, clue_probs)
+    for (clue, prob) in zip(valid_clues, clue_probs)
         clue_dist[clue] = prob
     end
     
@@ -255,10 +359,11 @@ end
     choose_clue_s1(partner_hand::Vector{Card}, partner_beliefs::Vector{CardBelief},
                    public::PublicGameState; α::Float64, qud::Symbol,
                    receiver_id::Int, giver_id::Int, 
-                   stochastic::Bool=false) -> Union{GiveHint, Nothing}
+                   stochastic::Bool=false, min_informativity::Float64=0.01) -> Union{GiveHint, Nothing}
 
 Choose the best clue according to the pragmatic speaker model.
 If stochastic=true, samples from P_S1; otherwise returns argmax.
+Clues with information gain below min_informativity are filtered out.
 """
 function choose_clue_s1(
     partner_hand::Vector{Card},
@@ -268,7 +373,8 @@ function choose_clue_s1(
     qud::Symbol,
     receiver_id::Int,
     giver_id::Int,
-    stochastic::Bool = false
+    stochastic::Bool = false,
+    min_informativity::Float64 = 0.01
 )
     # Get speaker distribution
     clue_dist = pragmatic_speaker(
@@ -278,7 +384,8 @@ function choose_clue_s1(
         α=α,
         qud=qud,
         receiver_id=receiver_id,
-        giver_id=giver_id
+        giver_id=giver_id,
+        min_informativity=min_informativity
     )
     
     if isempty(clue_dist)
@@ -322,9 +429,10 @@ end
 """
     get_best_clue_score(partner_hand::Vector{Card}, partner_beliefs::Vector{CardBelief},
                         public::PublicGameState; α::Float64, qud::Symbol,
-                        receiver_id::Int, giver_id::Int) -> Float64
+                        receiver_id::Int, giver_id::Int, min_informativity::Float64=0.01) -> Float64
 
 Get the score of the best clue available (used for action selection thresholding).
+Returns 0.0 if no clues meet the min_informativity threshold.
 """
 function get_best_clue_score(
     partner_hand::Vector{Card},
@@ -333,7 +441,8 @@ function get_best_clue_score(
     α::Float64,
     qud::Symbol,
     receiver_id::Int,
-    giver_id::Int
+    giver_id::Int,
+    min_informativity::Float64 = 0.01
 )
     clue_dist = pragmatic_speaker(
         partner_hand,
@@ -342,7 +451,8 @@ function get_best_clue_score(
         α=α,
         qud=qud,
         receiver_id=receiver_id,
-        giver_id=giver_id
+        giver_id=giver_id,
+        min_informativity=min_informativity
     )
     
     if isempty(clue_dist)
