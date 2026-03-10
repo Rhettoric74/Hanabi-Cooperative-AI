@@ -289,10 +289,16 @@ function choose_action(agent::GreedyHanabiAgent, game::FullGameState)
         end
     end
     
-    # 5. Ultimate fallback: discard the card with the lowest probability
-    if isnothing(action)
+    # 5. Ultimate fallback: discard the card with the lowest probability (only if not maxed)
+    if isnothing(action) && public.info_tokens < 8
         worst_idx = argmin(play_probs)
         action = DiscardCard(agent.player_id, worst_idx)
+    end
+    
+    # 6. Absolute last resort: play least risky card (when maxed and no options)
+    if isnothing(action)
+        best_idx = argmax(play_probs)
+        action = PlayCard(agent.player_id, best_idx)
     end
     if action isa PlayCard || action isa DiscardCard
         if !isempty(game.deck)
