@@ -209,7 +209,7 @@ function run_rsa_simulations(
     cards_per_player::Int;
     α::Float64 = 1.0,
     θ_play::Float64 = 0.85,
-    θ_discard::Float64 = 0.70,
+    θ_discard::Float64 = 0.75,
     qud_mode::Symbol = :dynamic,
     clue_threshold::Float64 = 0.6,
     min_clue_informativity::Float64 = 0.01,
@@ -458,13 +458,25 @@ end
 
 """
     compare_agents(num_simulations::Int, num_players::Int, cards_per_player::Int;
+                  α::Float64=1.0, θ_play::Float64=0.85, θ_discard::Float64=0.75,
+                  qud_mode::Symbol=:dynamic, clue_threshold::Float64=0.6,
+                  min_clue_informativity::Float64=0.01,
+                  greedy_threshold::Float64=0.75,
                   save_logs::Bool=true, save_individual_games::Bool=false) -> Nothing
 
 Compare RSA agents with baseline greedy agents. If save_logs is true, saves results to files.
 If save_individual_games is true, saves each game to a separate log file.
 """
 function compare_agents(num_simulations::Int, num_players::Int, cards_per_player::Int;
-                       save_logs::Bool = true, save_individual_games::Bool = false)
+                       α::Float64 = 1.0,
+                       θ_play::Float64 = 0.85,
+                       θ_discard::Float64 = 0.75,
+                       qud_mode::Symbol = :dynamic,
+                       clue_threshold::Float64 = 0.6,
+                       min_clue_informativity::Float64 = 0.01,
+                       greedy_threshold::Float64 = 0.75,
+                       save_logs::Bool = true,
+                       save_individual_games::Bool = false)
     println("\n" * "="^70)
     println("COMPARING RSA vs BASELINE AGENTS")
     println("="^70)
@@ -477,10 +489,12 @@ function compare_agents(num_simulations::Int, num_players::Int, cards_per_player
         num_simulations,
         num_players,
         cards_per_player;
-        α=1.0,
-        θ_play=0.85,
-        θ_discard=0.70,
-        qud_mode=:dynamic,
+        α=α,
+        θ_play=θ_play,
+        θ_discard=θ_discard,
+        qud_mode=qud_mode,
+        clue_threshold=clue_threshold,
+        min_clue_informativity=min_clue_informativity,
         verbose=false,
         log_file=rsa_log_file,
         save_individual_games=save_individual_games,
@@ -490,6 +504,7 @@ function compare_agents(num_simulations::Int, num_players::Int, cards_per_player
     # Run baseline greedy agent simulations
     println("\n" * "="^70)
     println("Running $num_simulations simulations with Greedy baseline agents")
+    println("Parameters: greedy_threshold=$greedy_threshold")
     println("="^70)
     
     baseline_scores = Int[]
@@ -503,7 +518,7 @@ function compare_agents(num_simulations::Int, num_players::Int, cards_per_player
         
         cur_game = init_game(num_players, cards_per_player)
         cur_agents = [
-            GreedyHanabiAgent(j, init_player_knowledge(cur_game, j), 0.75)
+            GreedyHanabiAgent(j, init_player_knowledge(cur_game, j), greedy_threshold)
             for j in 1:num_players
         ]
         
@@ -576,7 +591,7 @@ function compare_agents(num_simulations::Int, num_players::Int, cards_per_player
         baseline_log_file = "baseline_greedy_$(timestamp).txt"
         save_simulation_log(baseline_log_file, "Baseline Greedy Agent", baseline_results,
                           num_simulations, num_players, cards_per_player;
-                          threshold=0.75)
+                          greedy_threshold=greedy_threshold)
     end
     
     # Comparison
@@ -685,17 +700,21 @@ function save_comparison_log(
 end
 
 """
-    test_parameter_sensitivity(; save_logs::Bool=true, save_individual_games::Bool=false) -> Nothing
+    test_parameter_sensitivity(; num_simulations::Int=50, num_players::Int=5, 
+                               cards_per_player::Int=5, save_logs::Bool=true, 
+                               save_individual_games::Bool=false) -> Nothing
 
 Test different parameter settings to understand their impact.
 If save_logs is true, saves results to a file.
 If save_individual_games is true, saves each game to separate log files organized by parameter.
 """
-function test_parameter_sensitivity(; save_logs::Bool = true, save_individual_games::Bool = false)
-    num_simulations = 50  # Smaller for parameter sweep
-    num_players = 5
-    cards_per_player = 5
-    
+function test_parameter_sensitivity(; 
+    num_simulations::Int = 50,
+    num_players::Int = 5,
+    cards_per_player::Int = 5,
+    save_logs::Bool = true,
+    save_individual_games::Bool = false
+)
     println("\n" * "="^70)
     println("PARAMETER SENSITIVITY ANALYSIS")
     println("="^70)
@@ -849,17 +868,55 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("RSA Hanabi Agent - Simulation Script")
     println("=====================================\n")
     
-    # Configuration
+    # ========================================================================
+    # HYPERPARAMETER CONFIGURATION
+    # ========================================================================
+    # Game settings
     num_simulations = 100
     num_players = 5
     cards_per_player = 5
     
+    # RSA Agent Hyperparameters
+    α = 1.0                        # Speaker rationality (higher = more rational speaker)
+    θ_play = 0.85                  # Play threshold (confidence needed to play a card)
+    θ_discard = 0.75               # Discard threshold (confidence needed to discard a card)
+    qud_mode = :dynamic            # QUD mode: :play, :discard, or :dynamic
+    clue_threshold = 0.6           # Minimum probability for giving clues
+    min_clue_informativity = 0.01  # Minimum information gain (bits) for clues
+    
+    # Baseline Greedy Agent Hyperparameters
+    greedy_threshold = 0.75        # Playability threshold for greedy agent
+    
+    # Logging settings
+    save_logs = true
+    save_individual_games = true
+    # ========================================================================
+    
     # Run main comparison
-    compare_agents(num_simulations, num_players, cards_per_player,save_individual_games=true)
+    compare_agents(
+        num_simulations, 
+        num_players, 
+        cards_per_player;
+        α=α,
+        θ_play=θ_play,
+        θ_discard=θ_discard,
+        qud_mode=qud_mode,
+        clue_threshold=clue_threshold,
+        min_clue_informativity=min_clue_informativity,
+        greedy_threshold=greedy_threshold,
+        save_logs=save_logs,
+        save_individual_games=save_individual_games
+    )
     
     # Optional: Run parameter sensitivity analysis
     # Uncomment to test different parameters
-    # test_parameter_sensitivity()
+    # test_parameter_sensitivity(
+    #     num_simulations=50,
+    #     num_players=num_players,
+    #     cards_per_player=cards_per_player,
+    #     save_logs=save_logs,
+    #     save_individual_games=false
+    # )
     
     println("\nSimulations complete!")
 end
