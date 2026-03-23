@@ -440,41 +440,32 @@ end
 
 L1 pragmatic listener: Update beliefs by reasoning about speaker intent.
 
-For each card slot and each possible card:
-P_L1(card_i = c | hint) ∝ P_prior(c) * P_S1(hint | card_i = c)
+OPTIMIZED: Only applies L1 reasoning to hinted slots, uses L0 for non-hinted slots.
+For hinted slots: P_L1(card_i = c | hint) ∝ P_prior(c) * P_S1(hint | card_i = c)
 """
 function pragmatic_listener_update!(
     agent::RSAHanabiAgent,
     hint::CardHint,
     game::FullGameState
 )
-    for i in 1:length(agent.player_knowledge.own_hand)
+    # First apply literal labeling (positive information)
+    label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
+    
+    # Apply negative information to non-hinted slots
+    all_indices = collect(1:length(agent.player_knowledge.own_hand))
+    apply_negative_hint!(agent.player_knowledge.own_hand, all_indices, 
+                        hint.indices, hint.attribute)
+    
+    # OPTIMIZATION: Only apply L1 pragmatic reasoning to hinted slots
+    for i in hint.indices
         belief = agent.player_knowledge.own_hand[i]
         new_probs = Dict{Card, Float64}()
         
+        # Only consider cards matching the hint attribute (already filtered by literal update)
         for (card, prior_p) in belief.probs
             prior_p == 0 && continue
             
-            # Literal filter: card must be consistent with hint
-            literal_match = if i in hint.indices
-                # Card must match hint attribute
-                if hint.attribute isa Symbol
-                    card.color == hint.attribute
-                else
-                    card.number == hint.attribute
-                end
-            else
-                # Card must NOT match hint attribute
-                if hint.attribute isa Symbol
-                    card.color != hint.attribute
-                else
-                    card.number != hint.attribute
-                end
-            end
-            
-            !literal_match && continue
-            
-            # Compute speaker likelihood
+            # Compute speaker likelihood for this card
             speaker_like = compute_speaker_likelihood(hint, i, card, agent, game)
             
             # Bayesian update
@@ -487,14 +478,14 @@ function pragmatic_listener_update!(
             for card in keys(new_probs)
                 new_probs[card] /= total
             end
-        else
-            # Fallback to literal if speaker likelihood is zero everywhere
-            # This can happen if the hypothetical hand construction fails
-            new_probs = copy(belief.probs)
         end
         
         belief.probs = new_probs
     end
+    
+    # Finally, update all beliefs based on remaining cards
+    visible_cards = get_visible_cards(game, agent.player_id)
+    literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
 end
 
 # ============================================================================
@@ -583,27 +574,16 @@ end
     update_beliefs_hint!(agent::RSAHanabiAgent, hint::CardHint, game::FullGameState)
 
 Update beliefs after observing a hint.
-- If hint is for this agent: Use LITERAL update (L0) for tractability
+- If hint is for this agent: Use OPTIMIZED L1 pragmatic listener
 - If hint is for another agent: Use literal update on theory of mind
 
-Note: The full L1 pragmatic listener is commented out below as it's 
-computationally very expensive. The current implementation uses L0 (literal)
-interpretation, which is much faster and still works reasonably well.
-The RSA framework is primarily used in the S1 speaker (hint selection).
+Note: L1 listener is now optimized to only process hinted slots with L1 reasoning,
+making it computationally tractable.
 """
 function update_beliefs_hint!(agent::RSAHanabiAgent, hint::CardHint, game::FullGameState)
     if hint.reciever == agent.player_id
-        # Hint was given to this agent - use L0 literal listener for tractability
-        # (L1 pragmatic reasoning is too computationally expensive)
-        label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
-        
-        # Apply negative information
-        all_indices = collect(1:length(agent.player_knowledge.own_hand))
-        apply_negative_hint!(agent.player_knowledge.own_hand, all_indices, 
-                            hint.indices, hint.attribute)
-        
-        # For full L1 pragmatic listener, uncomment this:
-        # pragmatic_listener_update!(agent, hint, game)
+        # Hint was given to this agent - use OPTIMIZED L1 pragmatic listener
+        pragmatic_listener_update!(agent, hint, game)
     else
         # Hint was given to someone else - update theory of mind (literal)
         if haskey(agent.player_knowledge.theory_of_mind, hint.reciever)
