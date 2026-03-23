@@ -44,11 +44,11 @@ end
 
 num_simulations = 100
 scores = Int[]
-num_players = 5
-num_cards = 4
-threshold = 0.75
+num_players = 2
+num_cards = 5
+threshold = 1.0
 for i in 1:num_simulations
-    cur_game = init_game(num_players, 5)
+    cur_game = init_game(num_players, num_cards)
     cur_agents = [GreedyHanabiAgent(i, init_player_knowledge(cur_game, i), threshold) for i in 1:num_players]
     play_game_with_logging(cur_agents, cur_game)
     push!(scores, current_score(cur_game.public))

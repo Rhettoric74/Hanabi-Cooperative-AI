@@ -95,6 +95,7 @@ end
 # Fix the PublicGameState constructor
 mutable struct PublicGameState
     played_stacks::Dict{Symbol, Int}  # :red, :white, :green, :blue, :yellow only
+    played_cards::Vector{Card}
     info_tokens::Int
     explosion_tokens::Int
     discard_pile::Vector{Card}
@@ -105,6 +106,7 @@ mutable struct PublicGameState
     # Inner constructor with positional arguments
     function PublicGameState(
         played_stacks::Dict{Symbol, Int},
+        played_cards::Vector{Card},
         info_tokens::Int,
         explosion_tokens::Int,
         discard_pile::Vector{Card},
@@ -112,12 +114,13 @@ mutable struct PublicGameState
         hint_history::Vector{CardHint},
         last_turn = false
     )
-        new(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history, last_turn)
+        new(played_stacks, played_cards, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history, last_turn)
     end
 end
 # Outer constructor with defaults (positional, not keyword)
 function PublicGameState(
     played_stacks=Dict(:red=>0, :white=>0, :green=>0, :blue=>0, :yellow=>0),
+    played_cards=Card[],
     info_tokens=8,
     explosion_tokens=0,
     discard_pile=Card[],
@@ -126,7 +129,7 @@ function PublicGameState(
     last_turn = false
 )
     # Call the default constructor, not the function itself
-    return PublicGameState(played_stacks, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history, last_turn)
+    return PublicGameState(played_stacks, played_cards, info_tokens, explosion_tokens, discard_pile, deck_size, hint_history, last_turn)
 end
 const MAX_SCORE = 25  # 5 colors × 5 numbers
 const WIN_CONDITION = Dict(:red=>5, :white=>5, :green=>5, :blue=>5, :yellow=>5)
@@ -179,6 +182,7 @@ function play_card!(state::PublicGameState, card::Card)
     end
     
     state.played_stacks[card.color] = card.number
+    push!(state.played_cards, card)
     
     if card.number == 5 && state.info_tokens < 8
         state.info_tokens += 1
@@ -263,6 +267,7 @@ function init_game(num_players::Int=3, cards_per_player::Int=5)
     # Use positional arguments, not keyword
     public = PublicGameState(
         Dict(:red=>0, :white=>0, :green=>0, :blue=>0, :yellow=>0),  # played_stacks
+        Card[],                                                     # played_cards
         8,                                                           # info_tokens
         0,                                                           # explosion_tokens
         Card[],                                                      # discard_pile
@@ -327,9 +332,9 @@ end
 function get_visible_cards(full_game_state, player_indices)
     visible_cards = Vector{Card}()
     
-    # Fix: played_stacks is a Dict{Symbol,Int} of colors -> numbers, not actual cards
-    # You need to convert the stack information to actual Card objects if you want to include them
-    
+    # add successfully played cards (visible to everyone)
+
+    append!(visible_cards, full_game_state.public.played_cards)
     # Add discarded cards (visible to everyone)
     append!(visible_cards, full_game_state.public.discard_pile)
     
