@@ -140,91 +140,91 @@ function literal_belief_update!(card_beliefs::Vector{CardBelief}, observed_cards
 end
 
 
-function choose_action(agent::RandomHanabiAgent, game::FullGameState)
-    # Build the agent's current knowledge from the full game state.
-    # This automatically respects information constraints (own hand is unknown,
-    # other hands are fully observed).
-    knowledge = init_player_knowledge(game, agent.player_id)
-    public = game.public
+# function choose_action(agent::RandomHanabiAgent, game::FullGameState)
+#     # Build the agent's current knowledge from the full game state.
+#     # This automatically respects information constraints (own hand is unknown,
+#     # other hands are fully observed).
+#     knowledge = init_player_knowledge(game, agent.player_id)
+#     public = game.public
 
-    actions = Action[]
+#     actions = Action[]
 
-    # 1. Hint actions (only if info tokens are available)
-    if public.info_tokens > 0
-        for (receiver, hand) in knowledge.other_hands
-            # Determine all colors and numbers present in the receiver's hand
-            colors = unique(c.color for c in hand)
-            numbers = unique(c.number for c in hand)
-            for col in colors
-                push!(actions, GiveHint(agent.player_id, receiver, col))
-            end
-            for num in numbers
-                push!(actions, GiveHint(agent.player_id, receiver, num))
-            end
-        end
-    end
+#     # 1. Hint actions (only if info tokens are available)
+#     if public.info_tokens > 0
+#         for (receiver, hand) in knowledge.other_hands
+#             # Determine all colors and numbers present in the receiver's hand
+#             colors = unique(c.color for c in hand)
+#             numbers = unique(c.number for c in hand)
+#             for col in colors
+#                 push!(actions, GiveHint(agent.player_id, receiver, col))
+#             end
+#             for num in numbers
+#                 push!(actions, GiveHint(agent.player_id, receiver, num))
+#             end
+#         end
+#     end
 
-    # 2. Play actions – one for each card slot in the agent's own hand
-    for idx in 1:length(knowledge.own_hand)
-        push!(actions, PlayCard(agent.player_id, idx))
-    end
+#     # 2. Play actions – one for each card slot in the agent's own hand
+#     for idx in 1:length(knowledge.own_hand)
+#         push!(actions, PlayCard(agent.player_id, idx))
+#     end
 
-    # 3. Discard actions – only allowed if info tokens are not already maxed
-    if public.info_tokens < 8
-        for idx in 1:length(knowledge.own_hand)
-            push!(actions, DiscardCard(agent.player_id, idx))
-        end
-    end
+#     # 3. Discard actions – only allowed if info tokens are not already maxed
+#     if public.info_tokens < 8
+#         for idx in 1:length(knowledge.own_hand)
+#             push!(actions, DiscardCard(agent.player_id, idx))
+#         end
+#     end
 
-    # Safety check – should never happen in a normal game
-    isempty(actions) && error("No legal actions available for player $(agent.player_id)")
-    action = rand(actions)
-    if action isa PlayCard || action isa DiscardCard
-        if !isempty(game.deck)
-            agent.player_knowledge.own_hand[action.card_index].known = false
-            agent.player_knowledge.own_hand[action.card_index].known_color = nothing
-            agent.player_knowledge.own_hand[action.card_index].known_number = nothing
-        else
-            # remove beliefs about the card if there's no new cards to draw
-            deleteat!(agent.player_knowledge.own_hand, action.card_idx)
-        end
-    end
+#     # Safety check – should never happen in a normal game
+#     isempty(actions) && error("No legal actions available for player $(agent.player_id)")
+#     action = rand(actions)
+#     if action isa PlayCard || action isa DiscardCard
+#         if !isempty(game.deck)
+#             agent.player_knowledge.own_hand[action.card_index].known = false
+#             agent.player_knowledge.own_hand[action.card_index].known_color = nothing
+#             agent.player_knowledge.own_hand[action.card_index].known_number = nothing
+#         else
+#             # remove beliefs about the card if there's no new cards to draw
+#             deleteat!(agent.player_knowledge.own_hand, action.card_idx)
+#         end
+#     end
 
-    return action
-end
+#     return action
+# end
 
-function update_beliefs_hint!(agent::RandomHanabiAgent, hint::CardHint, game::FullGameState)
-    # simply label cards according to the hint
-    label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
-    return agent
-end
+# function update_beliefs_hint!(agent::RandomHanabiAgent, hint::CardHint, game::FullGameState)
+#     # simply label cards according to the hint
+#     label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
+#     return agent
+# end
 
-function update_beliefs_action!(agent::RandomHanabiAgent, action::Action,
-                                acting_player::Int, game::FullGameState)
+# function update_beliefs_action!(agent::RandomHanabiAgent, action::Action,
+#                                 acting_player::Int, game::FullGameState)
     
-    # Update beliefs about own hand
-    visible_cards = get_visible_cards(game, agent.player_id)
-    literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
+#     # Update beliefs about own hand
+#     visible_cards = get_visible_cards(game, agent.player_id)
+#     literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
     
-    # Update theory of mind for other players
-    for player in 1:length(game.player_hands)
-        if player != agent.player_id
-            if haskey(agent.player_knowledge.theory_of_mind, player)
-                player_visible = get_visible_cards(game, [player, agent.player_id])
-                literal_belief_update!(agent.player_knowledge.theory_of_mind[player], player_visible)
-            else
-                println("Warning: No theory_of_mind entry for player $player")
-                # Initialize it
-                player_visible = get_visible_cards(game, [player, agent.player_id])
-                hand_size = length(game.player_hands[player])
-                agent.player_knowledge.theory_of_mind[player] = 
-                    [create_informed_belief(player_visible) for _ in 1:hand_size]
-            end
-        end
-    end
+#     # Update theory of mind for other players
+#     for player in 1:length(game.player_hands)
+#         if player != agent.player_id
+#             if haskey(agent.player_knowledge.theory_of_mind, player)
+#                 player_visible = get_visible_cards(game, [player, agent.player_id])
+#                 literal_belief_update!(agent.player_knowledge.theory_of_mind[player], player_visible)
+#             else
+#                 println("Warning: No theory_of_mind entry for player $player")
+#                 # Initialize it
+#                 player_visible = get_visible_cards(game, [player, agent.player_id])
+#                 hand_size = length(game.player_hands[player])
+#                 agent.player_knowledge.theory_of_mind[player] = 
+#                     [create_informed_belief(player_visible) for _ in 1:hand_size]
+#             end
+#         end
+#     end
     
-    return agent
-end
+#     return agent
+# end
 
 """
     GreedyHanabiAgent <: AbstractHanabiAgent
@@ -250,62 +250,62 @@ function GreedyHanabiAgent(player_id::Int, knowledge::PlayerKnowledge)
     return GreedyHanabiAgent(player_id, knowledge, 0.6)
 end
 
-function choose_action(agent::GreedyHanabiAgent, game::FullGameState)
-    knowledge = agent.player_knowledge
-    public = game.public
+# function choose_action(agent::GreedyHanabiAgent, game::FullGameState)
+#     knowledge = agent.player_knowledge
+#     public = game.public
     
-    # Calculate play probabilities for each card in hand
-    play_probs = [calculate_play_probability(knowledge.own_hand[i], public) 
-                  for i in 1:length(knowledge.own_hand)]
-    action = nothing
-    # 1. Check if any card meets play threshold
-    for (idx, prob) in enumerate(play_probs)
-        if prob ≥ agent.play_threshold
-            println(prob)
-            action = PlayCard(agent.player_id, idx)
-        end
-    end
-    # 2. If info tokens available, consider giving hints
-    if isnothing(action) && public.info_tokens > 0
-        hint_action = choose_hint_action(agent, game)
-        if !isnothing(hint_action)
-            action = hint_action
-        end
-    end
+#     # Calculate play probabilities for each card in hand
+#     play_probs = [calculate_play_probability(knowledge.own_hand[i], public) 
+#                   for i in 1:length(knowledge.own_hand)]
+#     action = nothing
+#     # 1. Check if any card meets play threshold
+#     for (idx, prob) in enumerate(play_probs)
+#         if prob ≥ agent.play_threshold
+#             println(prob)
+#             action = PlayCard(agent.player_id, idx)
+#         end
+#     end
+#     # 2. If info tokens available, consider giving hints
+#     if isnothing(action) && public.info_tokens > 0
+#         hint_action = choose_hint_action(agent, game)
+#         if !isnothing(hint_action)
+#             action = hint_action
+#         end
+#     end
     
-    # 3. If discarding is allowed, discard least playable card
-    if isnothing(action) && public.info_tokens < 8
-        # Find card with lowest play probability
-        min_prob_idx = argmin(play_probs)
-        action = DiscardCard(agent.player_id, min_prob_idx)
-    end
+#     # 3. If discarding is allowed, discard least playable card
+#     if isnothing(action) && public.info_tokens < 8
+#         # Find card with lowest play probability
+#         min_prob_idx = argmin(play_probs)
+#         action = DiscardCard(agent.player_id, min_prob_idx)
+#     end
     
-    # 4. Fallback: if can't discard (max tokens) and no playable cards, must hint
-    # (This should only happen in edge cases)
-    if isnothing(action) && public.info_tokens > 0
-        # Try to give any hint, even if not optimal
-        fallback_hint = choose_any_hint(agent, game)
-        if !isnothing(fallback_hint)
-            action = fallback_hint
-        end
-    end
+#     # 4. Fallback: if can't discard (max tokens) and no playable cards, must hint
+#     # (This should only happen in edge cases)
+#     if isnothing(action) && public.info_tokens > 0
+#         # Try to give any hint, even if not optimal
+#         fallback_hint = choose_any_hint(agent, game)
+#         if !isnothing(fallback_hint)
+#             action = fallback_hint
+#         end
+#     end
     
-    # 5. Ultimate fallback: discard the card with the lowest probability
-    if isnothing(action)
-        worst_idx = argmin(play_probs)
-        action = DiscardCard(agent.player_id, worst_idx)
-    end
-    if action isa PlayCard || action isa DiscardCard
-        if !isempty(game.deck)
-            agent.player_knowledge.own_hand[action.card_index].known = false
-            agent.player_knowledge.own_hand[action.card_index].known_color = nothing
-            agent.player_knowledge.own_hand[action.card_index].known_number = nothing
-        else
-            deleteat!(agent.player_knowledge.own_hand, action.card_index)
-        end
-    end
-    return action
-end
+#     # 5. Ultimate fallback: discard the card with the lowest probability
+#     if isnothing(action)
+#         worst_idx = argmin(play_probs)
+#         action = DiscardCard(agent.player_id, worst_idx)
+#     end
+#     if action isa PlayCard || action isa DiscardCard
+#         if !isempty(game.deck)
+#             agent.player_knowledge.own_hand[action.card_index].known = false
+#             agent.player_knowledge.own_hand[action.card_index].known_color = nothing
+#             agent.player_knowledge.own_hand[action.card_index].known_number = nothing
+#         else
+#             deleteat!(agent.player_knowledge.own_hand, action.card_index)
+#         end
+#     end
+#     return action
+# end
 
 """
     calculate_play_probability(belief::CardBelief, public::PublicGameState) -> Float64
@@ -464,45 +464,45 @@ function choose_any_hint(agent::GreedyHanabiAgent, game::FullGameState)
 end
 
 # Reuse the same belief update functions from RandomHanabiAgent
-function update_beliefs_hint!(agent::GreedyHanabiAgent, hint::CardHint, game::FullGameState)
-    if hint.reciever == agent.player_id
-        # Hint was given to this agent
-        label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
-    else
-        # Hint was given to someone else - update theory of mind
-        if haskey(agent.player_knowledge.theory_of_mind, hint.reciever)
-            label_hinted_cards!(agent.player_knowledge.theory_of_mind[hint.reciever], 
-                               hint.indices, hint.attribute)
-        end
-    end
-    return agent
-end
+# function update_beliefs_hint!(agent::GreedyHanabiAgent, hint::CardHint, game::FullGameState)
+#     if hint.reciever == agent.player_id
+#         # Hint was given to this agent
+#         label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
+#     else
+#         # Hint was given to someone else - update theory of mind
+#         if haskey(agent.player_knowledge.theory_of_mind, hint.reciever)
+#             label_hinted_cards!(agent.player_knowledge.theory_of_mind[hint.reciever], 
+#                                hint.indices, hint.attribute)
+#         end
+#     end
+#     return agent
+# end
 
-function update_beliefs_action!(agent::GreedyHanabiAgent, action::Action,
-                                acting_player::Int, game::FullGameState)
-    # Update beliefs about own hand
-    visible_cards = get_visible_cards(game, agent.player_id)
-    literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
+# function update_beliefs_action!(agent::GreedyHanabiAgent, action::Action,
+#                                 acting_player::Int, game::FullGameState)
+#     # Update beliefs about own hand
+#     visible_cards = get_visible_cards(game, agent.player_id)
+#     literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
     
-    # Update theory of mind for other players
-    for player in 1:length(game.player_hands)
-        if player != agent.player_id
-            if haskey(agent.player_knowledge.theory_of_mind, player)
-                player_visible = get_visible_cards(game, [player, agent.player_id])
-                literal_belief_update!(agent.player_knowledge.theory_of_mind[player], player_visible)
-            end
-        end
-    end
+#     # Update theory of mind for other players
+#     for player in 1:length(game.player_hands)
+#         if player != agent.player_id
+#             if haskey(agent.player_knowledge.theory_of_mind, player)
+#                 player_visible = get_visible_cards(game, [player, agent.player_id])
+#                 literal_belief_update!(agent.player_knowledge.theory_of_mind[player], player_visible)
+#             end
+#         end
+#     end
     
-    # Update public information in knowledge
-    agent.player_knowledge.info_tokens = game.public.info_tokens
-    agent.player_knowledge.explosion_tokens = game.public.explosion_tokens
-    agent.player_knowledge.deck_size = game.public.deck_size
-    agent.player_knowledge.discard_pile = copy(game.public.discard_pile)
-    agent.player_knowledge.played_stacks = copy(game.public.played_stacks)
+#     # Update public information in knowledge
+#     agent.player_knowledge.info_tokens = game.public.info_tokens
+#     agent.player_knowledge.explosion_tokens = game.public.explosion_tokens
+#     agent.player_knowledge.deck_size = game.public.deck_size
+#     agent.player_knowledge.discard_pile = copy(game.public.discard_pile)
+#     agent.player_knowledge.played_stacks = copy(game.public.played_stacks)
     
-    return agent
-end
+#     return agent
+# end
 
 # Helper function to find index of minimum value
 function argmin(v::Vector{Float64})
@@ -515,7 +515,7 @@ function argmax(v::Vector{Float64})
 end
 
 # ============================================================================
-# RSA-BASED PRAGMATIC SPEAKER AGENT (Phase 2: S1 Implementation)
+# RSA-BASED PRAGMATIC SPEAKER AGENT
 # ============================================================================
 
 """
