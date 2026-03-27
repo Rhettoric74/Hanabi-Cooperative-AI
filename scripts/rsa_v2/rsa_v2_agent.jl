@@ -706,15 +706,102 @@ function choose_action(agent::RSAHanabiAgentV2, game::FullGameState)
     return action
 end
 
+# ============================================================================
+# RSA PRAGMATIC LISTENER 
+# ============================================================================
+
+"""
+    pragmatic_listener_update!(card_beliefs::Vector{CardBelief}, hint_attribute::Union{Symbol, Int},
+                               hint_indices::Vector{Int}, agent::RSAHanabiAgentV2, 
+                               public::PublicGameState)
+
+Update card beliefs using pragmatic listener reasoning (L1) layer on top of literal beliefs.
+
+After literal labeling, this function computes Bayesian pragmatic update:
+    belief_L1(card) ∝ belief_L0(card) * P_S(hint | card)
+
+For each hinted card, multiply its probability distribution by the speaker likelihood:
+    P_S(hint | card) = exp(α * U(card))
+
+where U(card) is the speaker utility (playable=3.0, critical=2.0, dispensable=1.0, etc).
+
+This implements the key RSA insight: "The speaker chose this hint intentionally,
+so hinted cards are more likely to have high utility (be playable, critical, etc)."
+
+Non-hinted cards retain their original (literal) probabilities.
+After updating all hinted cards, probabilities are normalized.
+"""
+function pragmatic_listener_update!(card_beliefs::Vector{CardBelief}, 
+                                    hint_attribute::Union{Symbol, Int},
+                                    hint_indices::Vector{Int}, 
+                                    agent::RSAHanabiAgentV2, 
+                                    public::PublicGameState)
+    # For each hinted card, apply pragmatic weighting
+    for idx in hint_indices
+        card_belief = card_beliefs[idx]
+        
+        # Compute pragmatic weight for each possible card value
+        for (card, prob) in card_belief.probs
+            if prob > 0
+                # Check if this card matches the hint attribute
+                matches_hint = false
+                if hint_attribute isa Symbol  # Color hint
+                    matches_hint = (card.color == hint_attribute)
+                else  # Number hint
+                    matches_hint = (card.number == hint_attribute)
+                end
+                
+                if matches_hint
+                    # Compute speaker utility for this card
+                    is_playable = can_play_card(public, card)
+                    is_critical = is_critical_card(card, public.played_stacks)
+                    is_dispensable = is_dispensable_card(card, public.played_stacks)
+                    
+                    utility = speaker_utility(card, is_playable, is_critical, is_dispensable)
+                    
+                    # Pragmatic weight: exp(α * U(card))
+                    # Higher utility cards get exponentially higher weighting
+                    pragmatic_weight = exp(agent.rationality * utility)
+                    
+                    # Update belief: multiply by pragmatic weight
+                    card_belief.probs[card] *= pragmatic_weight
+                end
+            end
+        end
+        
+        # Normalize probabilities for this card belief
+        total_prob = sum(values(card_belief.probs))
+        if total_prob > 0
+            for card in keys(card_belief.probs)
+                card_belief.probs[card] /= total_prob
+            end
+        end
+    end
+end
+
 function update_beliefs_hint!(agent::RSAHanabiAgentV2, hint::CardHint, game::FullGameState)
     if hint.reciever == agent.player_id
-        # Hint was given to this agent - update own beliefs with literal label
+        # Hint was given to this agent - update own beliefs with literal label + pragmatic reasoning
         label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
+        # Apply pragmatic listener update (L1 reasoning layer)
+        pragmatic_listener_update!(agent.player_knowledge.own_hand, hint.attribute, 
+                                   hint.indices, agent, game.public)
+        # Refresh beliefs based on remaining deck composition
+        visible_cards = get_visible_cards(game, agent.player_id)
+        literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
     else
-        # Hint was given to someone else - update theory of mind
+        # Hint was given to someone else - update theory of mind with pragmatic reasoning
         if haskey(agent.player_knowledge.theory_of_mind, hint.reciever)
             label_hinted_cards!(agent.player_knowledge.theory_of_mind[hint.reciever],
                                hint.indices, hint.attribute)
+
+            # NOTE: We might have to double check if need to do pragmatic listener for other player hints
+            # Apply pragmatic listener update to theory of mind
+            # pragmatic_listener_update!(agent.player_knowledge.theory_of_mind[hint.reciever],
+            #                           hint.attribute, hint.indices, agent, game.public)
+            # # Refresh theory-of-mind beliefs based on visible cards
+            # player_visible = get_visible_cards(game, [hint.reciever, agent.player_id])
+            # literal_belief_update!(agent.player_knowledge.theory_of_mind[hint.reciever], player_visible)
         end
     end
     return agent
