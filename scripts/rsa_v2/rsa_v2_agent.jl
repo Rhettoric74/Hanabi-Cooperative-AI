@@ -581,22 +581,125 @@ function compute_speaker_likelihood(receivers_hand::Vector{Card}, hint_indices::
 end
 
 """
+    simulate_l0_listener(receiver_beliefs::Vector{CardBelief}, hint_attribute::Union{Symbol, Int},
+                         hint_indices::Vector{Int}, public::PublicGameState)::Vector{CardBelief}
+
+Simulate what an L0 literal listener would infer from a hint. This applies only literal belief
+updates (label hinted cards + belief refresh), without pragmatic reasoning.
+
+Used during speaker planning to estimate how much a hint helps the receiver.
+Returns updated belief state for comparison with current state.
+"""
+function simulate_l0_listener(receiver_beliefs::Vector{CardBelief}, 
+                              hint_attribute::Union{Symbol, Int},
+                              hint_indices::Vector{Int}, 
+                              public::PublicGameState)::Vector{CardBelief}
+    # Create a copy of beliefs to simulate on (don't modify original)
+    simulated_beliefs = deepcopy(receiver_beliefs)
+    
+    # Apply literal labeling
+    label_hinted_cards!(simulated_beliefs, hint_indices, hint_attribute)
+    
+    # Note: We don't refresh deck composition here since we're just estimating immediate inference
+    return simulated_beliefs
+end
+
+"""
+    compute_playability_improvement(old_belief::CardBelief, new_belief::CardBelief,
+                                    public::PublicGameState)::Float64
+
+Compute how much a belief update improved the receiver's ability to identify playable cards.
+
+Returns a score representing the change in probability for important cards (playable > critical > dispensable).
+This is used to measure information gain from a hint.
+"""
+function compute_playability_improvement(old_belief::CardBelief, new_belief::CardBelief,
+                                         public::PublicGameState)::Float64
+    improvement = 0.0
+    
+    # For each possible card, compute utility-weighted probability change
+    for card in keys(new_belief.probs)
+        old_prob = get(old_belief.probs, card, 0.0)
+        new_prob = new_belief.probs[card]
+        prob_increase = max(0.0, new_prob - old_prob)  # Only count increases in confidence
+        
+        if prob_increase > 0.01  # Only significant changes
+            # Weight by card utility so playable cards matter most
+            is_playable = can_play_card(public, card)
+            is_critical = is_critical_card(card, public.played_stacks)
+            is_dispensable = is_dispensable_card(card, public.played_stacks)
+            
+            utility = speaker_utility(card, is_playable, is_critical, is_dispensable)
+            
+            # Information gain: probability increase weighted by utility
+            improvement += prob_increase * utility
+        end
+    end
+    
+    return improvement
+end
+
+"""
+    compute_information_gain(receiver_beliefs::Vector{CardBelief}, hint_indices::Vector{Int},
+                             hint_attribute::Union{Symbol, Int}, 
+                             public::PublicGameState)::Float64
+
+Estimate the information gain for the receiver from this hint.
+
+Simulates L0 listener inference, computes playability improvements for hinted cards,
+and returns a bonus score. Higher bonus means the hint is more informative and helpful
+for the receiver.
+
+This bonus is added to the pragmatic speaker score to make hint selection strategic:
+"Choose hints that not only highlight important cards, but significantly help the receiver
+understand their importance."
+"""
+function compute_information_gain(receiver_beliefs::Vector{CardBelief}, 
+                                   hint_indices::Vector{Int},
+                                   hint_attribute::Union{Symbol, Int},
+                                   public::PublicGameState)::Float64
+    total_gain = 0.0
+    
+    # Simulate what receiver would infer (L0 literal listener)
+    simulated_beliefs = simulate_l0_listener(receiver_beliefs, hint_attribute, hint_indices, public)
+    
+    # For each hinted card, compute improvement in playability inference
+    for idx in hint_indices
+        if idx <= length(receiver_beliefs)
+            gain = compute_playability_improvement(receiver_beliefs[idx], simulated_beliefs[idx], public)
+            total_gain += gain
+        end
+    end
+    
+    return total_gain
+end
+
+"""
     choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState) -> Union{GiveHint, Nothing}
 
-Choose a hint action using RSA-based pragmatic speaker reasoning (S1).
+Choose a hint action using RSA-based pragmatic speaker reasoning (S1) + Theory-of-Mind.
 
-For each receiver and each possible hint (colors and numbers), compute the utility-weighted
-score of cards matching that hint using compute_speaker_likelihood(). This reflects how
-well the hint highlights important cards. Return the hint with the highest total score.
+For each receiver and each possible hint (colors and numbers):
+  1. Compute base score using RSA speaker likelihood: S1_score = sum(exp(α·U(card)))
+  2. Compute information gain bonus using receiver's theory-of-mind beliefs (Phase 4):
+     bonus = information_gain based on how much hint helps receiver infer playability
+  3. Total score = S1_score + bonus_weight * information_gain
 
-Unlike GreedyHanabiAgent which uses hard max hint scoring, this uses utility weighting
-with exponential preference for playable, critical, and important cards. Higher rationality
-parameter (α) makes the agent more deterministic in its preferences.
+This makes hint selection two-fold strategic:
+  - S1 score: "This hint highlights important cards for me to identify"
+  - Bonus: "This hint significantly helps the receiver learn about their cards"
+
+Returns hint with highest total score. Unlike GreedyHanabiAgent which uses hard max hint
+scoring, this uses utility weighting with exponential preference for impactful hints.
 """
 function choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState)::Union{GiveHint, Nothing}
     best_hint = nothing
     best_score = -1000.0 # Start with a very low score to ensure any valid hint will be better
     public = game.public
+    
+    # Weight for information gain bonus (Phase 4 parameter)
+    # Higher = more weight on helping receiver; lower = more weight on speaker utility
+    bonus_weight = 0.5
     
     # Consider each other player as a potential receiver
     for receiver in 1:length(game.player_hands)
@@ -615,11 +718,18 @@ function choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState)
                                     receiver_knowledge[i].known_color == color, hint_indices)
             already_known && continue
             
-            # Compute score using RSA speaker likelihood
-            score = compute_speaker_likelihood(receiver_hand, hint_indices, agent, public)
+            # Compute base score using RSA speaker likelihood (S1)
+            s1_score = compute_speaker_likelihood(receiver_hand, hint_indices, agent, public)
             
-            if score > best_score
-                best_score = score
+            # Compute information gain bonus from theory-of-mind
+            # This estimates how much the hint helps the receiver infer playability
+            info_gain = compute_information_gain(receiver_knowledge, hint_indices, color, public)
+            
+            # Combined score: pragmatic speaker (S1) + theory-of-mind bonus
+            total_score = s1_score + (bonus_weight * info_gain)
+            
+            if total_score > best_score
+                best_score = total_score
                 best_hint = GiveHint(agent.player_id, receiver, color)
             end
         end
@@ -634,11 +744,18 @@ function choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState)
                                     receiver_knowledge[i].known_number == number, hint_indices)
             already_known && continue
             
-            # Compute score using RSA speaker likelihood
-            score = compute_speaker_likelihood(receiver_hand, hint_indices, agent, public)
+            # Compute base score using RSA speaker likelihood (S1)
+            s1_score = compute_speaker_likelihood(receiver_hand, hint_indices, agent, public)
             
-            if score > best_score
-                best_score = score
+            # Compute information gain bonus from theory-of-mind
+            # This estimates how much the hint helps the receiver infer playability
+            info_gain = compute_information_gain(receiver_knowledge, hint_indices, number, public)
+            
+            # Combined score: pragmatic speaker (S1) + theory-of-mind bonus
+            total_score = s1_score + (bonus_weight * info_gain)
+            
+            if total_score > best_score
+                best_score = total_score
                 best_hint = GiveHint(agent.player_id, receiver, number)
             end
         end
@@ -790,18 +907,19 @@ function update_beliefs_hint!(agent::RSAHanabiAgentV2, hint::CardHint, game::Ful
         visible_cards = get_visible_cards(game, agent.player_id)
         literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
     else
-        # Hint was given to someone else - update theory of mind with pragmatic reasoning
+        # Hint was given to someone else - update theory of mind with pragmatic reasoning (PHASE 4)
         if haskey(agent.player_knowledge.theory_of_mind, hint.reciever)
             label_hinted_cards!(agent.player_knowledge.theory_of_mind[hint.reciever],
                                hint.indices, hint.attribute)
 
-            # NOTE: We might have to double check if need to do pragmatic listener for other player hints
             # Apply pragmatic listener update to theory of mind
-            # pragmatic_listener_update!(agent.player_knowledge.theory_of_mind[hint.reciever],
-            #                           hint.attribute, hint.indices, agent, game.public)
-            # # Refresh theory-of-mind beliefs based on visible cards
-            # player_visible = get_visible_cards(game, [hint.reciever, agent.player_id])
-            # literal_belief_update!(agent.player_knowledge.theory_of_mind[hint.reciever], player_visible)
+            # This enables strategic hint selection: the agent remembers that hints are intentional,
+            # so the receiver will pragmatically infer hints reveal important cards
+            pragmatic_listener_update!(agent.player_knowledge.theory_of_mind[hint.reciever],
+                                      hint.attribute, hint.indices, agent, game.public)
+            # Refresh theory-of-mind beliefs based on visible cards
+            player_visible = get_visible_cards(game, [hint.reciever, agent.player_id])
+            literal_belief_update!(agent.player_knowledge.theory_of_mind[hint.reciever], player_visible)
         end
     end
     return agent
