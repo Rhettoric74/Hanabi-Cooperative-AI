@@ -545,36 +545,92 @@ mutable struct RSAHanabiAgentV2 <: AbstractHanabiAgent
 end
 
 """
+    compute_l0_listener_inference(receivers_hand::Vector{Card}, hint_attribute::Union{Symbol, Int},
+                                  hint_indices::Vector{Int})::Dict{Card, Float64}
+
+Compute P_L0(card | hint): the probability that a literal (non-pragmatic) listener would infer
+each possible card from the hint, assuming uniform distribution over matching cards.
+
+For cards matching the hint: P_L0(card | hint) = 1 / num_matches
+For cards not matching: P_L0(card | hint) = 0
+
+This is the L0 (literal listener) model: simple, non-pragmatic card identification.
+Used by the speaker in Phase 2 to reason: "How would a literal listener interpret this hint?"
+"""
+function compute_l0_listener_inference(receivers_hand::Vector{Card}, hint_attribute::Union{Symbol, Int},
+                                       hint_indices::Vector{Int})::Dict{Card, Float64}
+    l0_probs = Dict{Card, Float64}()
+    
+    # Initialize with zero probability for all cards
+    for card in receivers_hand
+        l0_probs[card] = 0.0
+    end
+    
+    # Uniform probability over matching cards
+    num_matches = length(hint_indices)
+    if num_matches > 0
+        uniform_prob = 1.0 / num_matches
+        for idx in hint_indices
+            l0_probs[receivers_hand[idx]] = uniform_prob
+        end
+    end
+    
+    return l0_probs
+end
+
+"""
     compute_speaker_likelihood(receivers_hand::Vector{Card}, hint_indices::Vector{Int},
-                               agent::RSAHanabiAgentV2, public::PublicGameState) -> Float64
+                               agent::RSAHanabiAgentV2, public::PublicGameState, 
+                               hint_attribute::Union{Symbol, Int})::Float64
 
-Compute likelihood P_S(hint | cards) that this hint would be chosen to describe this set of cards.
+Compute likelihood P_S(hint | cards) that a rational speaker would choose this hint.
 
-For each card that matches the hint, compute exp(α * U(card)) where U is the speaker utility
-determined by whether the card is playable, critical, or dispensable. Sum these contributions
-to get the total likelihood for this hint.
+This is the S1 (pragmatic speaker) model. For each card matching the hint:
+  1. Compute P_L0(card | hint) - how likely the literal listener is to infer this card
+  2. Compute U(card) - the utility (importance) of the card
+  3. Combine: exp(α * (log P_L0 + U))
+  
+Intuition: Speaker prefers hints that communicate high-utility cards to a literal listener.
+- If many cards match (low P_L0): hint is ambiguous, less valuable to speaker
+- If few cards match (high P_L0): hint is clear, speaker will use to highlight important cards
+- Higher utility cards (playable, critical) → speaker uses hints for them more
 
-The higher the utility of the hinted cards, the higher the likelihood that a rational speaker
-would choose this hint. This implements the RSA S1 speaker model.
+This implements proper RSA S1 reasoning with L0 foundation.
 """
 function compute_speaker_likelihood(receivers_hand::Vector{Card}, hint_indices::Vector{Int},
-                                    agent::RSAHanabiAgentV2, public::PublicGameState)::Float64
+                                    agent::RSAHanabiAgentV2, public::PublicGameState,
+                                    hint_attribute::Union{Symbol, Int})::Float64
     score = 0.0
     played_stacks = public.played_stacks
+    
+    # Compute L0 literal listener inference for this hint
+    l0_probs = compute_l0_listener_inference(receivers_hand, hint_attribute, hint_indices)
     
     for idx in hint_indices
         card = receivers_hand[idx]
         
-        # Determine card properties
-        is_playable = can_play_card(public, card)
-        is_critical = is_critical_card(card, played_stacks)
-        is_dispensable = is_dispensable_card(card, played_stacks)
+        # Get L0 probability for this card (will be 1/num_matches for matching cards)
+        l0_prob = l0_probs[card]
         
-        # Compute utility using RSA speaker utility function
-        utility = speaker_utility(card, is_playable, is_critical, is_dispensable)
-        
-        # Add exp(α * U) to score (higher utilities contribute more exponentially)
-        score += exp(agent.rationality * utility)
+        # DEBUG XXX
+        if l0_prob > 0
+            # Convert to log space for numerical stability
+            log_l0_prob = log(l0_prob)
+            
+            # Determine card properties
+            is_playable = can_play_card(public, card)
+            is_critical = is_critical_card(card, played_stacks)
+            is_dispensable = is_dispensable_card(card, played_stacks)
+            
+            # Compute utility using RSA speaker utility function
+            utility = speaker_utility(card, is_playable, is_critical, is_dispensable)
+            
+            # RSA S1 formula: exp(α * (log(P_L0) + U))
+            # This combines L0 inference clarity with card importance
+            s1_score = exp(agent.rationality * (log_l0_prob + utility))
+            
+            score += s1_score
+        end
     end
     
     return score
@@ -719,7 +775,8 @@ function choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState)
             already_known && continue
             
             # Compute base score using RSA speaker likelihood (S1)
-            s1_score = compute_speaker_likelihood(receiver_hand, hint_indices, agent, public)
+            # Pass the hint_attribute (color) so S1 can compute L0 reasoning
+            s1_score = compute_speaker_likelihood(receiver_hand, hint_indices, agent, public, color)
             
             # Compute information gain bonus from theory-of-mind
             # This estimates how much the hint helps the receiver infer playability
@@ -745,7 +802,8 @@ function choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState)
             already_known && continue
             
             # Compute base score using RSA speaker likelihood (S1)
-            s1_score = compute_speaker_likelihood(receiver_hand, hint_indices, agent, public)
+            # Pass the hint_attribute (number) so S1 can compute L0 reasoning
+            s1_score = compute_speaker_likelihood(receiver_hand, hint_indices, agent, public, number)
             
             # Compute information gain bonus from theory-of-mind
             # This estimates how much the hint helps the receiver infer playability
