@@ -555,7 +555,7 @@ For cards matching the hint: P_L0(card | hint) = 1 / num_matches
 For cards not matching: P_L0(card | hint) = 0
 
 This is the L0 (literal listener) model: simple, non-pragmatic card identification.
-Used by the speaker in Phase 2 to reason: "How would a literal listener interpret this hint?"
+Used by the speaker to reason: "How would a literal listener interpret this hint?"
 """
 function compute_l0_listener_inference(receivers_hand::Vector{Card}, hint_attribute::Union{Symbol, Int},
                                        hint_indices::Vector{Int})::Dict{Card, Float64}
@@ -737,7 +737,7 @@ Choose a hint action using RSA-based pragmatic speaker reasoning (S1) + Theory-o
 
 For each receiver and each possible hint (colors and numbers):
   1. Compute base score using RSA speaker likelihood: S1_score = sum(exp(α·U(card)))
-  2. Compute information gain bonus using receiver's theory-of-mind beliefs (Phase 4):
+  2. Compute information gain bonus using receiver's theory-of-mind beliefs:
      bonus = information_gain based on how much hint helps receiver infer playability
   3. Total score = S1_score + bonus_weight * information_gain
 
@@ -753,7 +753,7 @@ function choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState)
     best_score = -1000.0 # Start with a very low score to ensure any valid hint will be better
     public = game.public
     
-    # Weight for information gain bonus (Phase 4 parameter)
+    # Weight for information gain bonus 
     # Higher = more weight on helping receiver; lower = more weight on speaker utility
     bonus_weight = 0.5
     
@@ -911,46 +911,109 @@ function pragmatic_listener_update!(card_beliefs::Vector{CardBelief},
                                     hint_indices::Vector{Int}, 
                                     agent::RSAHanabiAgentV2, 
                                     public::PublicGameState)
-    # For each hinted card, apply pragmatic weighting
+    # =========================================================================
+    # PRAGMATIC LISTENER (L1) WITH PROPER BAYESIAN UPDATE
+    # =========================================================================
+    # 
+    # Apply Bayes' rule: belief_L1(card) ∝ belief_L0(card) × P_S1(hint | card)
+    # 
+    # where P_S1(hint | card) = exp(α · (log(P_L0) + U(card)))
+    #
+    # Key insight: The listener reasons about WHY the speaker chose this hint.
+    # - If speaker wanted to communicate a card, they'd pick hints that match it
+    # - Speaker prefers hints that also highlight high-utility cards
+    # - Therefore: hinted cards matching the attribute get upweighted
+    # - Non-matching cards get zeroed out
+    #
+    # =========================================================================
+    
+    # Step 1: Compute L0 baseline
+    # L0 literal listener: uniform probability over cards matching the hint
+    num_matches = length(hint_indices)
+    
+    if num_matches == 0
+        # No cards match this hint (shouldn't happen in practice)
+        return
+    end
+    
+    # Need to verify if correct DEBUG XXX
+    # L0 probability for any matching card: uniform distribution
+    # In log form: log(P_L0) = -log(num_matches)
+    log_l0_prob = -log(num_matches)
+    
+    # Step 2: For each hinted card slot, apply pragmatic Bayesian update
     for idx in hint_indices
         card_belief = card_beliefs[idx]
         
-        # Compute pragmatic weight for each possible card value
-        for (card, prob) in card_belief.probs
-            if prob > 0
-                # Check if this card matches the hint attribute
-                matches_hint = false
-                if hint_attribute isa Symbol  # Color hint
-                    matches_hint = (card.color == hint_attribute)
-                else  # Number hint
-                    matches_hint = (card.number == hint_attribute)
-                end
+        # Create new belief dictionary to avoid modifying while iterating
+        updated_probs = Dict{Card, Float64}()
+        
+        # For each card in the belief space, compute updated probability
+        for (card, prior_prob) in card_belief.probs
+            # Determine if this card matches the hint attribute
+            matches_hint = false
+            if hint_attribute isa Symbol  # Color hint
+                matches_hint = (card.color == hint_attribute)
+            else  # Number hint
+                matches_hint = (card.number == hint_attribute)
+            end
+            
+            if matches_hint
+                # ================================================================
+                # MATCHING CARD: Apply speaker likelihood weighting
+                # ================================================================
+                # Compute speaker utility for this card
+                is_playable = can_play_card(public, card)
+                is_critical = is_critical_card(card, public.played_stacks)
+                is_dispensable = is_dispensable_card(card, public.played_stacks)
+                utility = speaker_utility(card, is_playable, is_critical, is_dispensable)
                 
-                if matches_hint
-                    # Compute speaker utility for this card
-                    is_playable = can_play_card(public, card)
-                    is_critical = is_critical_card(card, public.played_stacks)
-                    is_dispensable = is_dispensable_card(card, public.played_stacks)
-                    
-                    utility = speaker_utility(card, is_playable, is_critical, is_dispensable)
-                    
-                    # Pragmatic weight: exp(α * U(card))
-                    # Higher utility cards get exponentially higher weighting
-                    pragmatic_weight = exp(agent.rationality * utility)
-                    
-                    # Update belief: multiply by pragmatic weight
-                    card_belief.probs[card] *= pragmatic_weight
+                # RSA formula: P_S1(hint | card) ∝ exp(α · (log_L0 + utility))
+                # This combines two factors:
+                #   1. log_L0: How clearly does this hint identify the card? 
+                #              (lower = fewer matches = clearer identification)
+                #   2. utility: Does the speaker want to highlight this card?
+                #              (higher = more important card)
+                s1_likelihood = exp(agent.rationality * (log_l0_prob + utility))
+                
+                # Bayesian update: new belief ∝ prior × likelihood
+                # Prior is the literal L0 belief (already in card_belief.probs)
+                # Likelihood is the pragmatic speaker model
+                updated_probs[card] = prior_prob * s1_likelihood
+                
+            else
+                # ================================================================
+                # NON-MATCHING CARD: Zero out probability
+                # ================================================================
+                # Card doesn't match the hint attribute, so listener knows it's not 
+                # the card the speaker was hinting about. Set probability to 0.
+                # This is the literal belief update: the hint provides information
+                # that eliminates non-matching possibilities.
+                updated_probs[card] = 0.0
+            end
+        end
+        
+        # Step 3: Normalize probabilities to sum to 1.0
+        total_prob = sum(values(updated_probs))
+        
+        if total_prob > 0
+            # Normalize: divide each probability by total
+            for card in keys(updated_probs)
+                updated_probs[card] /= total_prob
+            end
+        else
+            # Fallback: if all probabilities zeroed out (shouldn't happen), 
+            # reset to uniform over matching cards
+            println("!!Warning: All probabilities zeroed out in pragmatic update. Resetting to uniform over matches.")
+            for card in keys(updated_probs)
+                if (hint_attribute isa Symbol ? card.color == hint_attribute : card.number == hint_attribute)
+                    updated_probs[card] = 1.0 / num_matches
                 end
             end
         end
         
-        # Normalize probabilities for this card belief
-        total_prob = sum(values(card_belief.probs))
-        if total_prob > 0
-            for card in keys(card_belief.probs)
-                card_belief.probs[card] /= total_prob
-            end
-        end
+        # Update the belief in place
+        card_belief.probs = updated_probs
     end
 end
 
@@ -965,7 +1028,7 @@ function update_beliefs_hint!(agent::RSAHanabiAgentV2, hint::CardHint, game::Ful
         visible_cards = get_visible_cards(game, agent.player_id)
         literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
     else
-        # Hint was given to someone else - update theory of mind with pragmatic reasoning (PHASE 4)
+        # Hint was given to someone else - update theory of mind with pragmatic reasoning 
         if haskey(agent.player_knowledge.theory_of_mind, hint.reciever)
             label_hinted_cards!(agent.player_knowledge.theory_of_mind[hint.reciever],
                                hint.indices, hint.attribute)
