@@ -1,5 +1,6 @@
 include("hanabi_game_state.jl")
 include("rsa_utilities.jl")
+using StatsBase
 
 # ============================================================================
 # ABSTRACT AGENT INTERFACE
@@ -537,11 +538,60 @@ mutable struct RSAHanabiAgentV2 <: AbstractHanabiAgent
     player_knowledge::PlayerKnowledge
     threshold::Float64  # Probability threshold for playing
     rationality::Float64  # α parameter for softmax (higher = more deterministic)
+    use_softmax::Bool  # toggle between softmax (probabilistic) and argmax (deterministic)
     
     function RSAHanabiAgentV2(player_id::Int, knowledge::PlayerKnowledge,
-                             threshold::Float64 = 0.6, rationality::Float64 = 1.0)
-        return new(player_id, knowledge, threshold, rationality)
+                             threshold::Float64 = 0.6, rationality::Float64 = 1.0,
+                             use_softmax::Bool = true)
+        return new(player_id, knowledge, threshold, rationality, use_softmax)
     end
+end
+
+"""
+    sample_hint_rsa(scored_hints::Vector{Tuple{GiveHint, Float64}}, rationality::Float64)::GiveHint
+
+Sample a hint from the collection of scored hints using softmax distribution.
+
+This implements the RSA speaker model: S1 chooses utterances (hints) probabilistically,
+weighted by their utility scores with temperature parameter 1/α:
+
+    P_S1(hint) ∝ exp(α · score(hint))
+
+Where:
+- `scored_hints`: Vector of (hint, total_score) tuples collected from all possible hints
+- `rationality`: α parameter controlling the softmax temperature
+
+The softmax sampling respects RSA theory where the speaker is rational but not
+deterministic; higher-scoring hints are more likely but lower-scoring hints
+can still be chosen with non-zero probability.
+
+"""
+function sample_hint_rsa(scored_hints::Vector{Tuple{GiveHint, Float64}}, rationality::Float64)::GiveHint
+    if isempty(scored_hints)
+        error("Cannot sample from empty hint collection")
+    end
+    
+    # Extract scores
+    scores = [score for (_, score) in scored_hints]
+    
+    # Compute softmax probabilities: P_i = exp(α·score_i) / Σ_j exp(α·score_j)
+    # For numerical stability, use log-sum-exp trick:
+    # 1. Subtract max score from all scores (doesn't change softmax probabilities)
+    # 2. Compute exp(α·(score_i - score_max))
+    # 3. Normalize
+    
+    max_score = maximum(scores)
+    
+    # Compute exp terms with numerical stability
+    exp_terms = exp.(rationality .* (scores .- max_score))
+    
+    # Normalize to get probabilities
+    probabilities = exp_terms ./ sum(exp_terms)
+    
+    # Sample index according to distribution using StatsBase
+    sampled_idx = sample(Weights(probabilities))
+    
+    return scored_hints[sampled_idx][1]
 end
 
 """
@@ -749,8 +799,19 @@ Returns hint with highest total score. Unlike GreedyHanabiAgent which uses hard 
 scoring, this uses utility weighting with exponential preference for impactful hints.
 """
 function choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState)::Union{GiveHint, Nothing}
-    best_hint = nothing
-    best_score = -1000.0 # Start with a very low score to ensure any valid hint will be better
+    # ========================================================================
+    # Hint selection with RSA-aligned probability model
+    # ========================================================================
+    # Collects all valid hints with their RSA scores, then either:
+    # - Uses SOFTMAX SAMPLING if use_softmax=true (theory-aligned)
+    # - Uses ARGMAX if use_softmax=false (greedy deterministic)
+    #
+    # Softmax formula: P_S1(hint) ∝ exp(α · score(hint))
+    # Higher scores → more likely, but lower scores still possible
+    # Aligns with RSA speaker model where rationality α controls preference
+    # ========================================================================
+    
+    scored_hints = Tuple{GiveHint, Float64}[]
     public = game.public
     
     # Weight for information gain bonus 
@@ -775,20 +836,17 @@ function choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState)
             already_known && continue
             
             # Compute base score using RSA speaker likelihood (S1)
-            # Pass the hint_attribute (color) so S1 can compute L0 reasoning
+            # Incorporates L0 literal listener model + speaker utility
             s1_score = compute_speaker_likelihood(receiver_hand, hint_indices, agent, public, color)
             
             # Compute information gain bonus from theory-of-mind
-            # This estimates how much the hint helps the receiver infer playability
             info_gain = compute_information_gain(receiver_knowledge, hint_indices, color, public)
             
             # Combined score: pragmatic speaker (S1) + theory-of-mind bonus
             total_score = s1_score + (bonus_weight * info_gain)
             
-            if total_score > best_score
-                best_score = total_score
-                best_hint = GiveHint(agent.player_id, receiver, color)
-            end
+            hint = GiveHint(agent.player_id, receiver, color)
+            push!(scored_hints, (hint, total_score))
         end
         
         # Try all number hints
@@ -802,24 +860,38 @@ function choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState)
             already_known && continue
             
             # Compute base score using RSA speaker likelihood (S1)
-            # Pass the hint_attribute (number) so S1 can compute L0 reasoning
             s1_score = compute_speaker_likelihood(receiver_hand, hint_indices, agent, public, number)
             
             # Compute information gain bonus from theory-of-mind
-            # This estimates how much the hint helps the receiver infer playability
             info_gain = compute_information_gain(receiver_knowledge, hint_indices, number, public)
             
             # Combined score: pragmatic speaker (S1) + theory-of-mind bonus
             total_score = s1_score + (bonus_weight * info_gain)
             
-            if total_score > best_score
-                best_score = total_score
-                best_hint = GiveHint(agent.player_id, receiver, number)
-            end
+            hint = GiveHint(agent.player_id, receiver, number)
+            push!(scored_hints, (hint, total_score))
         end
     end
     
-    return best_hint
+    # Return hint based on use_softmax flag
+    if isempty(scored_hints)
+        return nothing
+    elseif agent.use_softmax
+        # PROBABILISTIC: Softmax sampling
+        # P_S1(hint) ∝ exp(α · score(hint))
+        # Theory-aligned: speaker is rational (prefers high scores) but non-deterministic
+        return sample_hint_rsa(scored_hints, agent.rationality)
+    else
+        # DETERMINISTIC: Argmax (pick best hint) Greedy approximation 
+        best_hint, best_score = scored_hints[1]
+        for (hint, score) in scored_hints[2:end]
+            if score > best_score
+                best_score = score
+                best_hint = hint
+            end
+        end
+        return best_hint
+    end
 end
 
 function choose_action(agent::RSAHanabiAgentV2, game::FullGameState)
