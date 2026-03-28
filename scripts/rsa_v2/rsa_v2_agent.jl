@@ -539,11 +539,12 @@ mutable struct RSAHanabiAgentV2 <: AbstractHanabiAgent
     threshold::Float64  # Probability threshold for playing
     rationality::Float64  # α parameter for softmax (higher = more deterministic)
     use_softmax::Bool  # toggle between softmax (probabilistic) and argmax (deterministic)
+    beta::Float64  # Cost scaling parameter: cost = beta / info_tokens (higher = stronger token penalty)
     
     function RSAHanabiAgentV2(player_id::Int, knowledge::PlayerKnowledge,
                              threshold::Float64 = 0.6, rationality::Float64 = 1.0,
-                             use_softmax::Bool = true)
-        return new(player_id, knowledge, threshold, rationality, use_softmax)
+                             use_softmax::Bool = true, beta::Float64 = 1.0)
+        return new(player_id, knowledge, threshold, rationality, use_softmax, beta)
     end
 end
 
@@ -675,9 +676,15 @@ function compute_speaker_likelihood(receivers_hand::Vector{Card}, hint_indices::
             # Compute utility using RSA speaker utility function
             utility = speaker_utility(card, is_playable, is_critical, is_dispensable)
             
-            # RSA S1 formula: exp(α * (log(P_L0) + U))
-            # This combines L0 inference clarity with card importance
-            s1_score = exp(agent.rationality * (log_l0_prob + utility))
+            # Compute cost term: C(hint) = beta / info_tokens
+            # Higher cost when tokens are low, low cost when tokens are abundant
+            # Encourages hinting early, discourages hinting when tokens are scarce
+            cost = agent.beta / max(0.0001, Float64(public.info_tokens))
+            
+            # RSA S1 formula: exp(α * (log(P_L0) + U - C))
+            # Combines L0 inference clarity, card importance, and token cost
+            utility_with_cost = log_l0_prob + utility - cost
+            s1_score = exp(agent.rationality * utility_with_cost)
             
             score += s1_score
         end
