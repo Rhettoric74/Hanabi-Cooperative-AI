@@ -1,4 +1,4 @@
-include("rsa_v2_agent.jl")
+include("rsa_agent.jl")
 using Statistics
 function play_game_with_logging(agents::Vector{<:AbstractHanabiAgent}, game::FullGameState, seed=nothing)
     !isnothing(seed) && Random.seed!(seed)
