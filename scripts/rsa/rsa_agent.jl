@@ -887,7 +887,7 @@ function pragmatic_listener_update!(card_beliefs::Vector{CardBelief},
         else
             # Fallback: if all probabilities zeroed out (shouldn't happen), 
             # reset to uniform over matching cards
-            println("!!Warning: All probabilities zeroed out in pragmatic update. Resetting to uniform over matches.")
+            # println("!!Warning: All probabilities zeroed out in pragmatic update. Resetting to uniform over matches.")
             for card in keys(updated_probs)
                 if (hint_attribute isa Symbol ? card.color == hint_attribute : card.number == hint_attribute)
                     updated_probs[card] = 1.0 / num_matches
