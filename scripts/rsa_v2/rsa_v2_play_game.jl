@@ -2,7 +2,7 @@ include("rsa_v2_agent.jl")
 using Statistics
 function play_game_with_logging(agents::Vector{<:AbstractHanabiAgent}, game::FullGameState, seed=nothing)
     !isnothing(seed) && Random.seed!(seed)
-    
+
     num_hints_given = 0
     
     for (i, agent) in enumerate(agents)
@@ -60,8 +60,8 @@ hint_cost_scaling = 1.0  # Cost sensitivity parameter for hint cost (beta)
 
 for i in 1:num_simulations
     cur_game = init_game(num_players, num_cards)
-    # Phase 2: Using RSAHanabiAgentV2 with pragmatic speaker reasoning
-    cur_agents = [RSAHanabiAgentV2(i, init_player_knowledge(cur_game, i), threshold, rationality, use_softmax, hint_cost_scaling) for i in 1:num_players]
+    # Using RSAHanabiAgent with pragmatic speaker reasoning
+    cur_agents = [RSAHanabiAgent(i, init_player_knowledge(cur_game, i), threshold, rationality, use_softmax, hint_cost_scaling) for i in 1:num_players]
     score, turns, hints = play_game_with_logging(cur_agents, cur_game)
     push!(scores, score)
     push!(hints_given, hints)

@@ -44,19 +44,7 @@ Update the agent's internal beliefs after observing an action taken by
 function update_beliefs_action! end
 
 
-"""
-    RandomHanabiAgent <: AbstractHanabiAgent
-
-An agent that picks uniformly at random from all currently legal actions.
-It does not maintain persistent beliefs; instead it recomputes its knowledge
-from the game state each time it needs to decide. This agent is useful for
-testing and as a baseline.
-"""
-mutable struct RandomHanabiAgent <: AbstractHanabiAgent
-    player_id::Int
-    player_knowledge::PlayerKnowledge
-end
-
+# helper function for beliefs management 
 function label_hinted_cards!(card_beliefs::Vector{CardBelief}, indices::Vector{Int}, attribute::Union{Symbol, Int})
     for index in indices
         card_belief = card_beliefs[index]
@@ -141,92 +129,6 @@ function literal_belief_update!(card_beliefs::Vector{CardBelief}, observed_cards
 end
 
 
-# function choose_action(agent::RandomHanabiAgent, game::FullGameState)
-#     # Build the agent's current knowledge from the full game state.
-#     # This automatically respects information constraints (own hand is unknown,
-#     # other hands are fully observed).
-#     knowledge = init_player_knowledge(game, agent.player_id)
-#     public = game.public
-
-#     actions = Action[]
-
-#     # 1. Hint actions (only if info tokens are available)
-#     if public.info_tokens > 0
-#         for (receiver, hand) in knowledge.other_hands
-#             # Determine all colors and numbers present in the receiver's hand
-#             colors = unique(c.color for c in hand)
-#             numbers = unique(c.number for c in hand)
-#             for col in colors
-#                 push!(actions, GiveHint(agent.player_id, receiver, col))
-#             end
-#             for num in numbers
-#                 push!(actions, GiveHint(agent.player_id, receiver, num))
-#             end
-#         end
-#     end
-
-#     # 2. Play actions – one for each card slot in the agent's own hand
-#     for idx in 1:length(knowledge.own_hand)
-#         push!(actions, PlayCard(agent.player_id, idx))
-#     end
-
-#     # 3. Discard actions – only allowed if info tokens are not already maxed
-#     if public.info_tokens < 8
-#         for idx in 1:length(knowledge.own_hand)
-#             push!(actions, DiscardCard(agent.player_id, idx))
-#         end
-#     end
-
-#     # Safety check – should never happen in a normal game
-#     isempty(actions) && error("No legal actions available for player $(agent.player_id)")
-#     action = rand(actions)
-#     if action isa PlayCard || action isa DiscardCard
-#         if !isempty(game.deck)
-#             agent.player_knowledge.own_hand[action.card_index].known = false
-#             agent.player_knowledge.own_hand[action.card_index].known_color = nothing
-#             agent.player_knowledge.own_hand[action.card_index].known_number = nothing
-#         else
-#             # remove beliefs about the card if there's no new cards to draw
-#             deleteat!(agent.player_knowledge.own_hand, action.card_idx)
-#         end
-#     end
-
-#     return action
-# end
-
-# function update_beliefs_hint!(agent::RandomHanabiAgent, hint::CardHint, game::FullGameState)
-#     # simply label cards according to the hint
-#     label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
-#     return agent
-# end
-
-# function update_beliefs_action!(agent::RandomHanabiAgent, action::Action,
-#                                 acting_player::Int, game::FullGameState)
-    
-#     # Update beliefs about own hand
-#     visible_cards = get_visible_cards(game, agent.player_id)
-#     literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
-    
-#     # Update theory of mind for other players
-#     for player in 1:length(game.player_hands)
-#         if player != agent.player_id
-#             if haskey(agent.player_knowledge.theory_of_mind, player)
-#                 player_visible = get_visible_cards(game, [player, agent.player_id])
-#                 literal_belief_update!(agent.player_knowledge.theory_of_mind[player], player_visible)
-#             else
-#                 println("Warning: No theory_of_mind entry for player $player")
-#                 # Initialize it
-#                 player_visible = get_visible_cards(game, [player, agent.player_id])
-#                 hand_size = length(game.player_hands[player])
-#                 agent.player_knowledge.theory_of_mind[player] = 
-#                     [create_informed_belief(player_visible) for _ in 1:hand_size]
-#             end
-#         end
-#     end
-    
-#     return agent
-# end
-
 """
     GreedyHanabiAgent <: AbstractHanabiAgent
 
@@ -250,63 +152,6 @@ end
 function GreedyHanabiAgent(player_id::Int, knowledge::PlayerKnowledge)
     return GreedyHanabiAgent(player_id, knowledge, 0.6)
 end
-
-# function choose_action(agent::GreedyHanabiAgent, game::FullGameState)
-#     knowledge = agent.player_knowledge
-#     public = game.public
-    
-#     # Calculate play probabilities for each card in hand
-#     play_probs = [calculate_play_probability(knowledge.own_hand[i], public) 
-#                   for i in 1:length(knowledge.own_hand)]
-#     action = nothing
-#     # 1. Check if any card meets play threshold
-#     for (idx, prob) in enumerate(play_probs)
-#         if prob ≥ agent.play_threshold
-#             println(prob)
-#             action = PlayCard(agent.player_id, idx)
-#         end
-#     end
-#     # 2. If info tokens available, consider giving hints
-#     if isnothing(action) && public.info_tokens > 0
-#         hint_action = choose_hint_action(agent, game)
-#         if !isnothing(hint_action)
-#             action = hint_action
-#         end
-#     end
-    
-#     # 3. If discarding is allowed, discard least playable card
-#     if isnothing(action) && public.info_tokens < 8
-#         # Find card with lowest play probability
-#         min_prob_idx = argmin(play_probs)
-#         action = DiscardCard(agent.player_id, min_prob_idx)
-#     end
-    
-#     # 4. Fallback: if can't discard (max tokens) and no playable cards, must hint
-#     # (This should only happen in edge cases)
-#     if isnothing(action) && public.info_tokens > 0
-#         # Try to give any hint, even if not optimal
-#         fallback_hint = choose_any_hint(agent, game)
-#         if !isnothing(fallback_hint)
-#             action = fallback_hint
-#         end
-#     end
-    
-#     # 5. Ultimate fallback: discard the card with the lowest probability
-#     if isnothing(action)
-#         worst_idx = argmin(play_probs)
-#         action = DiscardCard(agent.player_id, worst_idx)
-#     end
-#     if action isa PlayCard || action isa DiscardCard
-#         if !isempty(game.deck)
-#             agent.player_knowledge.own_hand[action.card_index].known = false
-#             agent.player_knowledge.own_hand[action.card_index].known_color = nothing
-#             agent.player_knowledge.own_hand[action.card_index].known_number = nothing
-#         else
-#             deleteat!(agent.player_knowledge.own_hand, action.card_index)
-#         end
-#     end
-#     return action
-# end
 
 """
     calculate_play_probability(belief::CardBelief, public::PublicGameState) -> Float64
@@ -464,47 +309,6 @@ function choose_any_hint(agent::GreedyHanabiAgent, game::FullGameState)
     return nothing
 end
 
-# Reuse the same belief update functions from RandomHanabiAgent
-# function update_beliefs_hint!(agent::GreedyHanabiAgent, hint::CardHint, game::FullGameState)
-#     if hint.reciever == agent.player_id
-#         # Hint was given to this agent
-#         label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
-#     else
-#         # Hint was given to someone else - update theory of mind
-#         if haskey(agent.player_knowledge.theory_of_mind, hint.reciever)
-#             label_hinted_cards!(agent.player_knowledge.theory_of_mind[hint.reciever], 
-#                                hint.indices, hint.attribute)
-#         end
-#     end
-#     return agent
-# end
-
-# function update_beliefs_action!(agent::GreedyHanabiAgent, action::Action,
-#                                 acting_player::Int, game::FullGameState)
-#     # Update beliefs about own hand
-#     visible_cards = get_visible_cards(game, agent.player_id)
-#     literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
-    
-#     # Update theory of mind for other players
-#     for player in 1:length(game.player_hands)
-#         if player != agent.player_id
-#             if haskey(agent.player_knowledge.theory_of_mind, player)
-#                 player_visible = get_visible_cards(game, [player, agent.player_id])
-#                 literal_belief_update!(agent.player_knowledge.theory_of_mind[player], player_visible)
-#             end
-#         end
-#     end
-    
-#     # Update public information in knowledge
-#     agent.player_knowledge.info_tokens = game.public.info_tokens
-#     agent.player_knowledge.explosion_tokens = game.public.explosion_tokens
-#     agent.player_knowledge.deck_size = game.public.deck_size
-#     agent.player_knowledge.discard_pile = copy(game.public.discard_pile)
-#     agent.player_knowledge.played_stacks = copy(game.public.played_stacks)
-    
-#     return agent
-# end
-
 # Helper function to find index of minimum value
 function argmin(v::Vector{Float64})
     return findmin(v)[2]
@@ -520,7 +324,7 @@ end
 # ============================================================================
 
 """
-    RSAHanabiAgentV2 <: AbstractHanabiAgent
+    RSAHanabiAgent <: AbstractHanabiAgent
 
 An RSA-based pragmatic speaker agent that:
 - Uses literal belief updates (like GreedyHanabiAgent)
@@ -533,7 +337,7 @@ scoring hints by how many playable cards they reveal, it uses utility-weighted
 softmax reasoning to select hints that a rational listener would interpret as
 indicating important cards.
 """
-mutable struct RSAHanabiAgentV2 <: AbstractHanabiAgent
+mutable struct RSAHanabiAgent <: AbstractHanabiAgent
     player_id::Int
     player_knowledge::PlayerKnowledge
     threshold::Float64  # Probability threshold for playing
@@ -541,7 +345,7 @@ mutable struct RSAHanabiAgentV2 <: AbstractHanabiAgent
     use_softmax::Bool  # toggle between softmax (probabilistic) and argmax (deterministic)
     beta::Float64  # Cost scaling parameter: cost = beta / info_tokens (higher = stronger token penalty)
     
-    function RSAHanabiAgentV2(player_id::Int, knowledge::PlayerKnowledge,
+    function RSAHanabiAgent(player_id::Int, knowledge::PlayerKnowledge,
                              threshold::Float64 = 0.6, rationality::Float64 = 1.0,
                              use_softmax::Bool = true, beta::Float64 = 1.0)
         return new(player_id, knowledge, threshold, rationality, use_softmax, beta)
@@ -631,7 +435,7 @@ end
 
 """
     compute_speaker_likelihood(receivers_hand::Vector{Card}, hint_indices::Vector{Int},
-                               agent::RSAHanabiAgentV2, public::PublicGameState, 
+                               agent::RSAHanabiAgent, public::PublicGameState, 
                                hint_attribute::Union{Symbol, Int})::Float64
 
 Compute likelihood P_S(hint | cards) that a rational speaker would choose this hint.
@@ -649,7 +453,7 @@ Intuition: Speaker prefers hints that communicate high-utility cards to a litera
 This implements proper RSA S1 reasoning with L0 foundation.
 """
 function compute_speaker_likelihood(receivers_hand::Vector{Card}, hint_indices::Vector{Int},
-                                    agent::RSAHanabiAgentV2, public::PublicGameState,
+                                    agent::RSAHanabiAgent, public::PublicGameState,
                                     hint_attribute::Union{Symbol, Int})::Float64
     score = 0.0
     played_stacks = public.played_stacks
@@ -788,7 +592,7 @@ function compute_information_gain(receiver_beliefs::Vector{CardBelief},
 end
 
 """
-    choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState) -> Union{GiveHint, Nothing}
+    choose_hint_action_rsa_v2(agent::RSAHanabiAgent, game::FullGameState) -> Union{GiveHint, Nothing}
 
 Choose a hint action using RSA-based pragmatic speaker reasoning (S1) + Theory-of-Mind.
 
@@ -805,7 +609,7 @@ This makes hint selection two-fold strategic:
 Returns hint with highest total score. Unlike GreedyHanabiAgent which uses hard max hint
 scoring, this uses utility weighting with exponential preference for impactful hints.
 """
-function choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState)::Union{GiveHint, Nothing}
+function choose_hint_action_rsa_v2(agent::RSAHanabiAgent, game::FullGameState)::Union{GiveHint, Nothing}
     # ========================================================================
     # Hint selection with RSA-aligned probability model
     # ========================================================================
@@ -901,7 +705,7 @@ function choose_hint_action_rsa_v2(agent::RSAHanabiAgentV2, game::FullGameState)
     end
 end
 
-function choose_action(agent::RSAHanabiAgentV2, game::FullGameState)
+function choose_action(agent::RSAHanabiAgent, game::FullGameState)
     knowledge = agent.player_knowledge
     public = game.public
     
@@ -966,7 +770,7 @@ end
 
 """
     pragmatic_listener_update!(card_beliefs::Vector{CardBelief}, hint_attribute::Union{Symbol, Int},
-                               hint_indices::Vector{Int}, agent::RSAHanabiAgentV2, 
+                               hint_indices::Vector{Int}, agent::RSAHanabiAgent, 
                                public::PublicGameState)
 
 Update card beliefs using pragmatic listener reasoning (L1) layer on top of literal beliefs.
@@ -988,7 +792,7 @@ After updating all hinted cards, probabilities are normalized.
 function pragmatic_listener_update!(card_beliefs::Vector{CardBelief}, 
                                     hint_attribute::Union{Symbol, Int},
                                     hint_indices::Vector{Int}, 
-                                    agent::RSAHanabiAgentV2, 
+                                    agent::RSAHanabiAgent, 
                                     public::PublicGameState)
     # =========================================================================
     # PRAGMATIC LISTENER (L1) WITH PROPER BAYESIAN UPDATE
@@ -1096,7 +900,7 @@ function pragmatic_listener_update!(card_beliefs::Vector{CardBelief},
     end
 end
 
-function update_beliefs_hint!(agent::RSAHanabiAgentV2, hint::CardHint, game::FullGameState)
+function update_beliefs_hint!(agent::RSAHanabiAgent, hint::CardHint, game::FullGameState)
     if hint.reciever == agent.player_id
         # Hint was given to this agent - update own beliefs with literal label + pragmatic reasoning
         label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
@@ -1125,7 +929,7 @@ function update_beliefs_hint!(agent::RSAHanabiAgentV2, hint::CardHint, game::Ful
     return agent
 end
 
-function update_beliefs_action!(agent::RSAHanabiAgentV2, action::Action,
+function update_beliefs_action!(agent::RSAHanabiAgent, action::Action,
                                 acting_player::Int, game::FullGameState)
     # Update beliefs about own hand
     visible_cards = get_visible_cards(game, agent.player_id)
