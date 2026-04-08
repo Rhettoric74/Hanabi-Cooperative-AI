@@ -128,6 +128,96 @@ function literal_belief_update!(card_beliefs::Vector{CardBelief}, observed_cards
     end
 end
 
+# Helper function to find the card with maximum probability
+function argmax(probs::Dict{Card, Float64})
+    max_card = first(keys(probs))
+    max_prob = probs[max_card]
+    for (card, prob) in probs
+        if prob > max_prob
+            max_card = card
+            max_prob = prob
+        end
+    end
+    return max_card
+end
+
+function renormalize_belief_update!(card_beliefs::Vector{CardBelief}, observed_cards::Vector{Card})
+    # Compute remaining cards in deck (cards not yet observed anywhere)
+    remaining = compute_remaining_cards(observed_cards)
+    
+    for card_belief in card_beliefs
+        # Skip if card is already fully known
+        if card_belief.known isa Card
+            continue
+        end
+        
+        # Create a copy of the current probabilities to modify
+        updated_probs = copy(card_belief.probs)
+        total_removed_prob = 0.0
+        
+        # Check each card type - zero out only if no copies remain
+        for card in keys(updated_probs)
+            # If there are no remaining copies of this card in the deck, zero it out
+            if !haskey(remaining, card) || remaining[card] == 0
+                total_removed_prob += updated_probs[card]
+                updated_probs[card] = 0.0
+            end
+        end
+        
+        # Calculate remaining total probability
+        remaining_total = 1.0 - total_removed_prob
+        
+        # Re-normalize if there's remaining probability mass
+        if remaining_total > 0
+            for card in keys(updated_probs)
+                if updated_probs[card] > 0
+                    updated_probs[card] /= remaining_total
+                end
+            end
+        else
+            # If all probability mass was removed, fall back to remaining possible cards
+            total_remaining = sum(values(remaining))
+            
+            if total_remaining > 0
+                # Count how many card types match constraints and have remaining copies
+                matching_count = 0
+                for (card, count) in remaining
+                    if count > 0
+                        color_match = isnothing(card_belief.known_color) || card.color == card_belief.known_color
+                        number_match = isnothing(card_belief.known_number) || card.number == card_belief.known_number
+                        if color_match && number_match
+                            matching_count += count
+                        end
+                    end
+                end
+                
+                if matching_count > 0
+                    for card in keys(updated_probs)
+                        color_match = isnothing(card_belief.known_color) || card.color == card_belief.known_color
+                        number_match = isnothing(card_belief.known_number) || card.number == card_belief.known_number
+                        if color_match && number_match && haskey(remaining, card) && remaining[card] > 0
+                            updated_probs[card] = remaining[card] / matching_count
+                        else
+                            updated_probs[card] = 0.0
+                        end
+                    end
+                end
+            end
+        end
+        
+        # Update the belief in place
+        card_belief.probs = updated_probs
+        
+        # Update known flags if probability becomes 1.0 for a single card
+        max_card = argmax(updated_probs)
+        if updated_probs[max_card] == 1.0
+            card_belief.known = max_card
+            card_belief.known_color = max_card.color
+            card_belief.known_number = max_card.number
+        end
+    end
+end
+
 
 """
     GreedyHanabiAgent <: AbstractHanabiAgent
@@ -812,6 +902,8 @@ function pragmatic_listener_update!(card_beliefs::Vector{CardBelief},
     
     # Step 1: Compute L0 baseline
     # L0 literal listener: uniform probability over cards matching the hint
+    #TODO: refactor this to also take in a list of visible cards and normalize probabilities in a way
+    # that ignores already seen cards.
     num_matches = length(hint_indices)
     
     if num_matches == 0
@@ -900,15 +992,178 @@ function pragmatic_listener_update!(card_beliefs::Vector{CardBelief},
     end
 end
 
+function pragmatic_listener_update_with_literal_prior!(card_beliefs::Vector{CardBelief}, 
+                                    hint_attribute::Union{Symbol, Int},
+                                    hint_indices::Vector{Int}, 
+                                    agent::RSAHanabiAgent, 
+                                    public::PublicGameState,
+                                    observed_cards::Vector{Card})
+    # =========================================================================
+    # PRAGMATIC LISTENER (L1) WITH PROPER BAYESIAN UPDATE
+    # =========================================================================
+    # 
+    # Apply Bayes' rule: belief_L1(card) ∝ prior(card) × P_S1(hint | card)
+    # 
+    # where prior(card) is uniform over remaining unobserved cards matching constraints
+    # and P_S1(hint | card) = exp(α · (log(P_L0) + U(card)))
+    #
+    # =========================================================================
+    
+    # Step 1: Compute remaining cards (cards not yet observed in hand/discard)
+    remaining = compute_remaining_cards(observed_cards)
+    total_remaining_cards = sum(values(remaining))
+    
+    if total_remaining_cards == 0
+        return  # No cards left to reason about
+    end
+    
+    # Step 2: For each hinted card slot, apply pragmatic Bayesian update
+    for idx in hint_indices
+        card_belief = card_beliefs[idx]
+        
+        # Create new belief dictionary
+        updated_probs = Dict{Card, Float64}()
+        
+        # Step 3: Count how many cards in remaining match the hint AND match known constraints
+        matching_cards_count = 0
+        for (card, count) in remaining
+            if count == 0
+                continue
+            end
+            
+            # Check if card matches hint attribute
+            matches_hint = false
+            if hint_attribute isa Symbol  # Color hint
+                matches_hint = (card.color == hint_attribute)
+            else  # Number hint
+                matches_hint = (card.number == hint_attribute)
+            end
+            
+            if !matches_hint
+                continue
+            end
+            
+            # Check if card matches known constraints for this slot
+            color_match = isnothing(card_belief.known_color) || card.color == card_belief.known_color
+            number_match = isnothing(card_belief.known_number) || card.number == card_belief.known_number
+            
+            if color_match && number_match
+                matching_cards_count += count
+            end
+        end
+        
+        if matching_cards_count == 0
+            # No cards match - shouldn't happen in valid game state
+            continue
+        end
+        
+        # Step 4: L0 baseline probability (uniform over matching cards)
+        # In log form: log(P_L0) = -log(matching_cards_count)
+        log_l0_prob = -log(matching_cards_count)
+        
+        # Step 5: Compute prior probability for each card (based on remaining counts)
+        total_prior = 0.0
+        card_prior = Dict{Card, Float64}()
+        
+        for (card, count) in remaining
+            if count == 0
+                card_prior[card] = 0.0
+                continue
+            end
+            
+            # Check if card matches known constraints for this slot
+            color_match = isnothing(card_belief.known_color) || card.color == card_belief.known_color
+            number_match = isnothing(card_belief.known_number) || card.number == card_belief.known_number
+            
+            if color_match && number_match
+                # Prior is proportional to remaining count
+                prior = count / total_remaining_cards
+                card_prior[card] = prior
+                total_prior += prior
+            else
+                card_prior[card] = 0.0
+            end
+        end
+        
+        # Normalize prior (should already sum to something reasonable, but just in case)
+        if total_prior > 0
+            for card in keys(card_prior)
+                card_prior[card] /= total_prior
+            end
+        end
+        
+        # Step 6: Apply pragmatic Bayesian update
+        for (card, prior_prob) in card_prior
+            if prior_prob == 0
+                updated_probs[card] = 0.0
+                continue
+            end
+            
+            # Check if this card matches the hint attribute
+            matches_hint = false
+            if hint_attribute isa Symbol  # Color hint
+                matches_hint = (card.color == hint_attribute)
+            else  # Number hint
+                matches_hint = (card.number == hint_attribute)
+            end
+            
+            if matches_hint
+                # ================================================================
+                # MATCHING CARD: Apply speaker likelihood weighting
+                # ================================================================
+                # Compute speaker utility for this card
+                is_playable = can_play_card(public, card)
+                is_critical = is_critical_card(card, public.played_stacks)
+                is_dispensable = is_dispensable_card(card, public.played_stacks)
+                utility = speaker_utility(card, is_playable, is_critical, is_dispensable)
+                
+                # RSA formula: P_S1(hint | card) ∝ exp(α · (log_L0 + utility))
+                s1_likelihood = exp(agent.rationality * (log_l0_prob + utility))
+                
+                # Bayesian update: new belief ∝ prior × likelihood
+                updated_probs[card] = prior_prob * s1_likelihood
+            else
+                # Non-matching card gets zero probability
+                updated_probs[card] = 0.0
+            end
+        end
+        
+        # Step 7: Normalize probabilities to sum to 1.0
+        total_prob = sum(values(updated_probs))
+        
+        if total_prob > 0
+            for card in keys(updated_probs)
+                updated_probs[card] /= total_prob
+            end
+        else
+            # Fallback: uniform over matching cards
+            for card in keys(updated_probs)
+                if (hint_attribute isa Symbol ? card.color == hint_attribute : card.number == hint_attribute)
+                    # Check constraints again
+                    color_match = isnothing(card_belief.known_color) || card.color == card_belief.known_color
+                    number_match = isnothing(card_belief.known_number) || card.number == card_belief.known_number
+                    if color_match && number_match
+                        updated_probs[card] = 1.0 / matching_cards_count
+                    else
+                        updated_probs[card] = 0.0
+                    end
+                end
+            end
+        end
+        
+        # Update the belief in place
+        card_belief.probs = updated_probs
+    end
+end
 function update_beliefs_hint!(agent::RSAHanabiAgent, hint::CardHint, game::FullGameState)
     if hint.reciever == agent.player_id
         # Hint was given to this agent - update own beliefs with literal label + pragmatic reasoning
         label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
         # Apply pragmatic listener update (L1 reasoning layer)
-        pragmatic_listener_update!(agent.player_knowledge.own_hand, hint.attribute, 
-                                   hint.indices, agent, game.public)
         # Refresh beliefs based on remaining deck composition
         visible_cards = get_visible_cards(game, agent.player_id)
+        pragmatic_listener_update_with_literal_prior!(agent.player_knowledge.own_hand, hint.attribute, 
+                                   hint.indices, agent, game.public, visible_cards)
         #literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
     else
         # Hint was given to someone else - update theory of mind with pragmatic reasoning 
@@ -919,10 +1174,10 @@ function update_beliefs_hint!(agent::RSAHanabiAgent, hint::CardHint, game::FullG
             # Apply pragmatic listener update to theory of mind
             # This enables strategic hint selection: the agent remembers that hints are intentional,
             # so the receiver will pragmatically infer hints reveal important cards
-            pragmatic_listener_update!(agent.player_knowledge.theory_of_mind[hint.reciever],
-                                      hint.attribute, hint.indices, agent, game.public)
             # Refresh theory-of-mind beliefs based on visible cards
             player_visible = get_visible_cards(game, [hint.reciever, agent.player_id])
+            pragmatic_listener_update_with_literal_prior!(agent.player_knowledge.theory_of_mind[hint.reciever],
+                                      hint.attribute, hint.indices, agent, game.public, player_visible)
             #literal_belief_update!(agent.player_knowledge.theory_of_mind[hint.reciever], player_visible)
         end
     end
@@ -933,14 +1188,14 @@ function update_beliefs_action!(agent::RSAHanabiAgent, action::Action,
                                 acting_player::Int, game::FullGameState)
     # Update beliefs about own hand
     visible_cards = get_visible_cards(game, agent.player_id)
-    literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
+    renormalize_belief_update!(agent.player_knowledge.own_hand, visible_cards)
     
     # Update theory of mind for other players
     for player in 1:length(game.player_hands)
         if player != agent.player_id
             if haskey(agent.player_knowledge.theory_of_mind, player)
                 player_visible = get_visible_cards(game, [player, agent.player_id])
-                literal_belief_update!(agent.player_knowledge.theory_of_mind[player], player_visible)
+                renormalize_belief_update!(agent.player_knowledge.theory_of_mind[player], player_visible)
             end
         end
     end
