@@ -798,7 +798,7 @@ function pragmatic_listener_update!(card_beliefs::Vector{CardBelief},
     # PRAGMATIC LISTENER (L1) WITH PROPER BAYESIAN UPDATE
     # =========================================================================
     # 
-    # Apply Bayes' rule: belief_L1(card) ∝ belief_L0(card) × P_S1(hint | card)
+    # Apply Bayes' rule: belief_L1(card) ∝ belief_L0(card)cho × P_S1(hint | card)
     # 
     # where P_S1(hint | card) = exp(α · (log(P_L0) + U(card)))
     #
@@ -909,7 +909,7 @@ function update_beliefs_hint!(agent::RSAHanabiAgent, hint::CardHint, game::FullG
                                    hint.indices, agent, game.public)
         # Refresh beliefs based on remaining deck composition
         visible_cards = get_visible_cards(game, agent.player_id)
-        literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
+        #literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
     else
         # Hint was given to someone else - update theory of mind with pragmatic reasoning 
         if haskey(agent.player_knowledge.theory_of_mind, hint.reciever)
@@ -923,7 +923,7 @@ function update_beliefs_hint!(agent::RSAHanabiAgent, hint::CardHint, game::FullG
                                       hint.attribute, hint.indices, agent, game.public)
             # Refresh theory-of-mind beliefs based on visible cards
             player_visible = get_visible_cards(game, [hint.reciever, agent.player_id])
-            literal_belief_update!(agent.player_knowledge.theory_of_mind[hint.reciever], player_visible)
+            #literal_belief_update!(agent.player_knowledge.theory_of_mind[hint.reciever], player_visible)
         end
     end
     return agent
