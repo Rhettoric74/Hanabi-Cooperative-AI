@@ -216,17 +216,18 @@ function run_hanabi_visualization()
     # Uncomment and modify these lines to create your scenario
     #
     action_sequence = [
-          (1, GiveHint(1, 4, :rainbow))      # Player 1 hints red to Player 2
-    #     (2, PlayAction(1)),                   # Player 2 plays slot 1
-    #     (3, DiscardAction(2)),                # Player 3 discards slot 2
-    #     (1, GiveHint(3, :number, 5)),         # Player 1 hints 5's to Player 3
+          (1, GiveHint(1, 4, :rainbow)),      # Player 1 hints red to Player 2
+          (2, GiveHint(2, 3, :red)),                   # Player 2 plays slot 1
+          (3, DiscardCard(3, 3))               # Player 3 discards slot 2
+          #(4, choose_action(agents[4], initial_game)),         # Player 1 hints 5's to Player 3
     ]
 
-    
+    """
     # Store beliefs before
     println("\n📊 Initial beliefs for Player 4:")
     before_beliefs = deepcopy(agents[4].player_knowledge.own_hand)
     display(plot_hand_beliefs(before_beliefs, 4, "INITIAL"))
+    """
 
     # Execute your action sequence
     println("\n🎮 Playing custom actions...\n")
@@ -255,11 +256,18 @@ function run_hanabi_visualization()
         over, reason = is_game_over(current_game.public)
         over && (println("Game over: $reason"); break)
     end
-
+    # Store beliefs before
+    println("\n📊 Initial beliefs for Player 4:")
+    before_beliefs = deepcopy(agents[4].player_knowledge.own_hand)
+    display(plot_hand_beliefs(before_beliefs, 4, "INITIAL"))
+    action = choose_action(agents[4], initial_game)
+    println("  Action: $action")
+        
+    execute_action!(initial_game, action)
     # Show updated beliefs
     println("\n📊 Updated beliefs for Player 4:")
     after_beliefs = deepcopy(agents[4].player_knowledge.own_hand)
-    display(compare_beliefs(before_beliefs, after_beliefs, 4, "P1 Beliefs"))
+    display(compare_beliefs(before_beliefs, after_beliefs, 4, "P4 Beliefs"))
 
     println("\n🃏 Actual cards in Player 4's hand:")
     for (i, card) in enumerate(current_game.player_hands[4])

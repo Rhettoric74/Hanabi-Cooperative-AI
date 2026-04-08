@@ -1,6 +1,3 @@
-# Utilized the same file name "hanabi_game_state.jl" as in the original greedy implementation
-# ============================================================================
-
 using Gen
 using Random
 import Random: shuffle!

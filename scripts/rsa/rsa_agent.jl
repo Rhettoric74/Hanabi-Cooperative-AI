@@ -155,10 +155,29 @@ function renormalize_belief_update!(card_beliefs::Vector{CardBelief}, observed_c
         updated_probs = copy(card_belief.probs)
         total_removed_prob = 0.0
         
-        # Check each card type - zero out only if no copies remain
+        # Check each card type - zero out if:
+        # 1. No remaining copies in deck, OR
+        # 2. Card doesn't match known_color constraint, OR
+        # 3. Card doesn't match known_number constraint
         for card in keys(updated_probs)
-            # If there are no remaining copies of this card in the deck, zero it out
+            should_zero = false
+            
+            # Check if no remaining copies
             if !haskey(remaining, card) || remaining[card] == 0
+                should_zero = true
+            end
+            
+            # Check known color constraint
+            if !should_zero && !isnothing(card_belief.known_color) && card.color != card_belief.known_color
+                should_zero = true
+            end
+            
+            # Check known number constraint
+            if !should_zero && !isnothing(card_belief.known_number) && card.number != card_belief.known_number
+                should_zero = true
+            end
+            
+            if should_zero
                 total_removed_prob += updated_probs[card]
                 updated_probs[card] = 0.0
             end
@@ -795,6 +814,8 @@ function choose_hint_action_rsa_v2(agent::RSAHanabiAgent, game::FullGameState)::
     end
 end
 
+
+
 function choose_action(agent::RSAHanabiAgent, game::FullGameState)
     knowledge = agent.player_knowledge
     public = game.public
@@ -843,9 +864,12 @@ function choose_action(agent::RSAHanabiAgent, game::FullGameState)
     # Update hand beliefs after action
     if action isa PlayCard || action isa DiscardCard
         if !isempty(game.deck)
-            agent.player_knowledge.own_hand[action.card_index].known = false
-            agent.player_knowledge.own_hand[action.card_index].known_color = nothing
-            agent.player_knowledge.own_hand[action.card_index].known_number = nothing
+            # Get observed cards to compute remaining deck distribution
+            observed_cards = vcat(game.public.discard_pile, game.public.played_cards)
+        
+            # Replace the old belief with a new informed belief
+            agent.player_knowledge.own_hand[action.card_index] = create_informed_belief(observed_cards)
+            println("Updated player belief for newly drawn card")
         else
             deleteat!(agent.player_knowledge.own_hand, action.card_index)
         end
@@ -999,32 +1023,37 @@ function pragmatic_listener_update_with_literal_prior!(card_beliefs::Vector{Card
                                     public::PublicGameState,
                                     observed_cards::Vector{Card})
     # =========================================================================
-    # PRAGMATIC LISTENER (L1) WITH PROPER BAYESIAN UPDATE
+    # PRAGMATIC LISTENER (L1) WITH BAYESIAN UPDATE USING CURRENT PRIOR
     # =========================================================================
     # 
     # Apply Bayes' rule: belief_L1(card) ∝ prior(card) × P_S1(hint | card)
     # 
-    # where prior(card) is uniform over remaining unobserved cards matching constraints
+    # where prior(card) is the current belief distribution (already normalized)
     # and P_S1(hint | card) = exp(α · (log(P_L0) + U(card)))
     #
     # =========================================================================
     
-    # Step 1: Compute remaining cards (cards not yet observed in hand/discard)
+    # Step 1: First renormalize all beliefs based on observed cards and known constraints
+    # This ensures the prior is consistent with current game state
+    renormalize_belief_update!(card_beliefs, observed_cards)
+    
+    # Step 2: Compute remaining cards to check what's still available for L0 calculation
     remaining = compute_remaining_cards(observed_cards)
-    total_remaining_cards = sum(values(remaining))
     
-    if total_remaining_cards == 0
-        return  # No cards left to reason about
-    end
-    
-    # Step 2: For each hinted card slot, apply pragmatic Bayesian update
+    # Step 3: For each hinted card slot, apply pragmatic Bayesian update
     for idx in hint_indices
         card_belief = card_beliefs[idx]
         
-        # Create new belief dictionary
+        # Skip if card is already fully known
+        if card_belief.known isa Card
+            continue
+        end
+        
+        # Create new belief dictionary based on current distribution
         updated_probs = Dict{Card, Float64}()
         
-        # Step 3: Count how many cards in remaining match the hint AND match known constraints
+        # Step 4: Count how many possible cards match the hint (for L0 calculation)
+        # We count based on remaining cards that match both hint and known constraints
         matching_cards_count = 0
         for (card, count) in remaining
             if count == 0
@@ -1057,43 +1086,13 @@ function pragmatic_listener_update_with_literal_prior!(card_beliefs::Vector{Card
             continue
         end
         
-        # Step 4: L0 baseline probability (uniform over matching cards)
-        # In log form: log(P_L0) = -log(matching_cards_count)
+        # Step 5: L0 baseline probability (uniform over matching cards)
         log_l0_prob = -log(matching_cards_count)
         
-        # Step 5: Compute prior probability for each card (based on remaining counts)
-        total_prior = 0.0
-        card_prior = Dict{Card, Float64}()
+        # Step 6: Apply pragmatic update using current belief as prior
+        total_prob = 0.0
         
-        for (card, count) in remaining
-            if count == 0
-                card_prior[card] = 0.0
-                continue
-            end
-            
-            # Check if card matches known constraints for this slot
-            color_match = isnothing(card_belief.known_color) || card.color == card_belief.known_color
-            number_match = isnothing(card_belief.known_number) || card.number == card_belief.known_number
-            
-            if color_match && number_match
-                # Prior is proportional to remaining count
-                prior = count / total_remaining_cards
-                card_prior[card] = prior
-                total_prior += prior
-            else
-                card_prior[card] = 0.0
-            end
-        end
-        
-        # Normalize prior (should already sum to something reasonable, but just in case)
-        if total_prior > 0
-            for card in keys(card_prior)
-                card_prior[card] /= total_prior
-            end
-        end
-        
-        # Step 6: Apply pragmatic Bayesian update
-        for (card, prior_prob) in card_prior
+        for (card, prior_prob) in card_belief.probs
             if prior_prob == 0
                 updated_probs[card] = 0.0
                 continue
@@ -1101,16 +1100,13 @@ function pragmatic_listener_update_with_literal_prior!(card_beliefs::Vector{Card
             
             # Check if this card matches the hint attribute
             matches_hint = false
-            if hint_attribute isa Symbol  # Color hint
+            if hint_attribute isa Symbol
                 matches_hint = (card.color == hint_attribute)
-            else  # Number hint
+            else
                 matches_hint = (card.number == hint_attribute)
             end
             
             if matches_hint
-                # ================================================================
-                # MATCHING CARD: Apply speaker likelihood weighting
-                # ================================================================
                 # Compute speaker utility for this card
                 is_playable = can_play_card(public, card)
                 is_critical = is_critical_card(card, public.played_stacks)
@@ -1122,6 +1118,7 @@ function pragmatic_listener_update_with_literal_prior!(card_beliefs::Vector{Card
                 
                 # Bayesian update: new belief ∝ prior × likelihood
                 updated_probs[card] = prior_prob * s1_likelihood
+                total_prob += updated_probs[card]
             else
                 # Non-matching card gets zero probability
                 updated_probs[card] = 0.0
@@ -1129,23 +1126,31 @@ function pragmatic_listener_update_with_literal_prior!(card_beliefs::Vector{Card
         end
         
         # Step 7: Normalize probabilities to sum to 1.0
-        total_prob = sum(values(updated_probs))
-        
         if total_prob > 0
             for card in keys(updated_probs)
-                updated_probs[card] /= total_prob
+                if updated_probs[card] > 0
+                    updated_probs[card] /= total_prob
+                end
             end
         else
-            # Fallback: uniform over matching cards
-            for card in keys(updated_probs)
-                if (hint_attribute isa Symbol ? card.color == hint_attribute : card.number == hint_attribute)
-                    # Check constraints again
+            # Fallback: uniform over matching cards from remaining
+            for (card, count) in remaining
+                if count == 0
+                    continue
+                end
+                
+                matches_hint = false
+                if hint_attribute isa Symbol
+                    matches_hint = (card.color == hint_attribute)
+                else
+                    matches_hint = (card.number == hint_attribute)
+                end
+                
+                if matches_hint
                     color_match = isnothing(card_belief.known_color) || card.color == card_belief.known_color
                     number_match = isnothing(card_belief.known_number) || card.number == card_belief.known_number
                     if color_match && number_match
-                        updated_probs[card] = 1.0 / matching_cards_count
-                    else
-                        updated_probs[card] = 0.0
+                        updated_probs[card] = count / matching_cards_count
                     end
                 end
             end
@@ -1153,6 +1158,14 @@ function pragmatic_listener_update_with_literal_prior!(card_beliefs::Vector{Card
         
         # Update the belief in place
         card_belief.probs = updated_probs
+        
+        # Update known flags if probability becomes 1.0 for a single card
+        max_card = argmax(updated_probs)
+        if updated_probs[max_card] == 1.0
+            card_belief.known = max_card
+            card_belief.known_color = max_card.color
+            card_belief.known_number = max_card.number
+        end
     end
 end
 function update_beliefs_hint!(agent::RSAHanabiAgent, hint::CardHint, game::FullGameState)

@@ -53,8 +53,8 @@ hints_given = Int[]
 turns_taken = Int[]
 num_players = 5
 num_cards = 4
-threshold = 1.0
-rationality = 0.25  # RSA rationality parameter (alpha)
+threshold = 0.9
+rationality = 5.0  # RSA rationality parameter (alpha)
 use_softmax = true
 hint_cost_scaling = 1.0  # Cost sensitivity parameter for hint cost (beta)
 
