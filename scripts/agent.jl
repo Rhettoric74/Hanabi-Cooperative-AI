@@ -467,11 +467,17 @@ function update_beliefs_hint!(agent::GreedyHanabiAgent, hint::CardHint, game::Fu
     if hint.reciever == agent.player_id
         # Hint was given to this agent
         label_hinted_cards!(agent.player_knowledge.own_hand, hint.indices, hint.attribute)
+        
+        visible_cards = get_visible_cards(game, agent.player_id)
+        literal_belief_update!(agent.player_knowledge.own_hand, visible_cards)
     else
         # Hint was given to someone else - update theory of mind
         if haskey(agent.player_knowledge.theory_of_mind, hint.reciever)
             label_hinted_cards!(agent.player_knowledge.theory_of_mind[hint.reciever], 
                                hint.indices, hint.attribute)
+            
+            visible_cards = get_visible_cards(game, hint.reciever)
+            literal_belief_update!(agent.player_knowledge.theory_of_mind[hint.reciever], visible_cards)
         end
     end
     return agent
